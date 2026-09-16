@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { toast } from "sonner";
 import { StatusBadge } from "./StatusBadge";
+import { Modal } from "./Modal";
 import { LinkedInPreview } from "./LinkedInPreview";
 import { XPreview } from "./XPreview";
 import { NewsletterPreview } from "./NewsletterPreview";
@@ -34,7 +35,7 @@ const CHANNEL_LABEL: Record<ChannelOutput["channel"], string> = {
 };
 
 export function ChannelOutputCard({ output }: { output: ChannelOutput }) {
-  const [mode, setMode] = useState<"edit" | "preview">("preview");
+  const [previewOpen, setPreviewOpen] = useState(false);
   const [body, setBody] = useState(output.body);
   const [subject, setSubject] = useState(output.subject ?? "");
   const [feedback, setFeedback] = useState("");
@@ -129,29 +130,26 @@ export function ChannelOutputCard({ output }: { output: ChannelOutput }) {
         </div>
       </div>
 
-      <div className="flex gap-1.5 text-xs">
-        <button onClick={() => setMode("edit")} className={`cursor-pointer ${mode === "edit" ? "font-semibold underline" : "text-muted"}`}>
-          Edit
-        </button>
-        <span className="text-muted">/</span>
-        <button onClick={() => setMode("preview")} className={`cursor-pointer ${mode === "preview" ? "font-semibold underline" : "text-muted"}`}>
+      <div className="flex flex-col gap-2">
+        {output.channel === "newsletter" && (
+          <input value={subject} onChange={(e) => setSubject(e.target.value)} className="border border-rule px-2 py-1 text-sm" />
+        )}
+        <textarea value={body} onChange={(e) => setBody(e.target.value)} rows={8} className="border border-rule p-2 text-sm" />
+        <button onClick={() => setPreviewOpen(true)} className="cursor-pointer self-start text-xs text-muted underline hover:text-ink">
           Preview
         </button>
       </div>
 
-      {mode === "edit" ? (
-        <div className="flex flex-col gap-2">
-          {output.channel === "newsletter" && (
-            <input value={subject} onChange={(e) => setSubject(e.target.value)} className="border border-rule px-2 py-1 text-sm" />
+      {previewOpen && (
+        <Modal title={`${CHANNEL_LABEL[output.channel]} preview`} onClose={() => setPreviewOpen(false)}>
+          {output.channel === "linkedin" ? (
+            <LinkedInPreview body={body} />
+          ) : output.channel === "x" ? (
+            <XPreview body={body} hashtags={output.hashtags} />
+          ) : (
+            <NewsletterPreview subject={subject} body={body} />
           )}
-          <textarea value={body} onChange={(e) => setBody(e.target.value)} rows={8} className="border border-rule p-2 text-sm" />
-        </div>
-      ) : output.channel === "linkedin" ? (
-        <LinkedInPreview body={body} />
-      ) : output.channel === "x" ? (
-        <XPreview body={body} hashtags={output.hashtags} />
-      ) : (
-        <NewsletterPreview subject={subject} body={body} />
+        </Modal>
       )}
 
       {output.last_error && <p className="text-xs text-flag">{output.last_error}</p>}
