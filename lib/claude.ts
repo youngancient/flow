@@ -1,0 +1,496 @@
+import "server-only";
+import Anthropic from "@anthropic-ai/sdk";
+import {
+  buildPlanAndGenerateSchema,
+  buildEvaluationSchema,
+  buildRevisionSchema,
+  channelAdaptationSchema,
+  type RubricCriteria,
+} from "./schemas";
+import {
+  SEO_BEST_PRACTICES,
+  CHANNEL_FORMATTING_RULES,
+  CONTENT_EVALUATION_RUBRIC,
+  HOUSE_STYLE,
+  DRAFT_OPTION_LABELS,
+} from "./rules";
+import { cleanArticleText, cleanChannelText } from "./style-guard";
+
+/**
+ * Model tiering — a deliberate cost-awareness decision (artifact/design.md,
+ * "Stage detail, model tiering, and guardrails"): Sonnet where output
+ * quality is the product, Haiku where the task is closer to
+ * classification/reformatting. Named constants so a tier change is a
+ * one-line, auditable edit.
+ */
+export const MODEL_DRAFTING = "claude-sonnet-5";
+export const MODEL_REVISE = "claude-sonnet-5";
+export const MODEL_EVAL = "claude-haiku-4-5-20251001";
+export const MODEL_CHANNEL_ADAPT = "claude-haiku-4-5-20251001";
+
+let client: Anthropic | null = null;
+
+function anthropic(): Anthropic {
+  if (client) return client;
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) throw new Error("Missing ANTHROPIC_API_KEY env var");
+  client = new Anthropic({ apiKey });
+  return client;
+}
+
+export type LlmCallResult<T> = {
+  data: T;
+  inputTokens: number;
+  outputTokens: number;
+};
+
+type ToolCallParams = {
+  model: string;
+  system: string;
+  userPrompt: string;
+  maxTokens: number;
+  toolName: string;
+  toolDescription: string;
+  inputSchema: Record<string, unknown>;
+};
+
+/**
+ * Generic structured-output call via forced tool use. The caller
+ * zod-validates the returned input afterward — "trust but verify" applies
+ * even with structured outputs (artifact/design.md, "Prompting strategy").
+ *
+ * Deliberately does not set `temperature` (or top_p/top_k): Claude Sonnet 5
+ * (and Opus 4.8+, Fable 5) reject any non-default value for these with a
+ * 400 "temperature is deprecated for this model" — the SDK's TypeScript
+ * types still declare the field for compatibility with earlier models, so
+ * it type-checks fine but the API rejects it at runtime. Per-stage
+ * temperature tiering was already a secondary nudge on top of the explicit
+ * "3 distinctly angled options" prompt instruction, not the only mechanism
+ * for output diversity, so losing it isn't a functional regression — see
+ * artifact/design.md, "Prompting strategy."
+ */
+async function callTool({
+  model,
+  system,
+  userPrompt,
+  maxTokens,
+  toolName,
+  toolDescription,
+  inputSchema,
+}: ToolCallParams): Promise<LlmCallResult<unknown>> {
+  const message = await anthropic().messages.create({
+    model,
+    max_tokens: maxTokens,
+    system: `${system}\n\n${HOUSE_STYLE}`,
+    messages: [{ role: "user", content: userPrompt }],
+    tools: [
+      {
+        name: toolName,
+        description: toolDescription,
+        input_schema: inputSchema as Anthropic.Tool.InputSchema,
+      },
+    ],
+    tool_choice: { type: "tool", name: toolName },
+  });
+
+  const toolUse = message.content.find(
+    (block): block is Anthropic.ToolUseBlock => block.type === "tool_use"
+  );
+  if (!toolUse) {
+    throw new Error(`Claude did not return a ${toolName} tool call`);
+  }
+  if (message.stop_reason === "max_tokens") {
+    // The tool-call JSON gets cut off mid-generation once max_tokens is hit,
+    // so whatever fields the model hadn't written yet come back missing
+    // entirely. Without this check that surfaces downstream as an opaque
+    // Zod "Required" error on some field alphabetically/positionally later
+    // in the schema (e.g. adaptToChannels truncating after "linkedin," so
+    // "x" and "newsletter" look absent rather than truncated) — a
+    // misleading error for what's actually a token-budget problem.
+    throw new Error(`Claude's ${toolName} response was truncated at maxTokens=${maxTokens} — raise it.`);
+  }
+
+  return {
+    data: toolUse.input,
+    inputTokens: message.usage.input_tokens,
+    outputTokens: message.usage.output_tokens,
+  };
+}
+
+const chunkIdSchema = (allowedChunkIds: string[]) => ({
+  type: "array",
+  items: allowedChunkIds.length > 0 ? { type: "string", enum: allowedChunkIds } : { type: "string" },
+});
+
+// ---------------------------------------------------------------------------
+// Stage 3: plan + generate options
+// ---------------------------------------------------------------------------
+
+export type ExcerptForPrompt = { id: string; sourceUrl: string; text: string };
+
+export async function planAndGenerateOptions(params: {
+  rawIdea: string;
+  targetAudience: string;
+  supportingNotes: string | null;
+  excerpts: ExcerptForPrompt[];
+  lowGrounding: boolean;
+}) {
+  const allowedChunkIds = params.excerpts.map((e) => e.id);
+
+  const excerptsBlock = params.excerpts.length
+    ? params.excerpts
+        .map((e) => `[${e.id}] (source: ${e.sourceUrl})\n${e.text}`)
+        .join("\n\n---\n\n")
+    : "(No excerpts cleared the relevance threshold — see grounding note below.)";
+
+  const groundingNote = params.lowGrounding
+    ? "\nGROUNDING WARNING: none of the retrieved source material was relevant enough to use. Write from general knowledge, hedge every specific claim explicitly (e.g. \"generally,\" \"in many cases\"), and do not invent statistics, quotes, or specific facts. Leave source_chunk_ids empty for every option.\n"
+    : "";
+
+  const userPrompt = `
+Content idea: ${params.rawIdea}
+Target audience: ${params.targetAudience}
+${params.supportingNotes ? `Supporting material / voice sample from the requester: ${params.supportingNotes}\n` : ""}
+${groundingNote}
+Available source excerpts (cite ONLY these IDs in source_chunk_ids, never invent an ID):
+${excerptsBlock}
+
+Produce a content plan (primary keyword + outline) and exactly 3 distinct article options (labeled A, B, C). Give the three options genuinely different angles — for example one data-led, one narrative/case-study-led, one practical how-to — so they are meaningfully different choices, not near-duplicates. Follow these SEO rules:
+
+${SEO_BEST_PRACTICES}
+
+Every option's body_markdown must be well-formed markdown (one H1, H2 sections, H3 where needed). Cite the excerpts that actually support each claim via source_chunk_ids — do not cite an excerpt that doesn't support what you wrote, and never reference an ID that wasn't given to you above.
+`.trim();
+
+  const result = await callTool({
+    model: MODEL_DRAFTING,
+    system:
+      "You are a senior content strategist and SEO editor for a marketing agency. You write clearly, cite only the source material you're given, and never fabricate facts, statistics, or quotes.",
+    userPrompt,
+    maxTokens: 8000,
+    toolName: "submit_plan_and_options",
+    toolDescription: "Submit the content plan and three distinct article options.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        plan: {
+          type: "object",
+          properties: {
+            primary_keyword: { type: "string" },
+            outline: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: {
+                  heading: { type: "string" },
+                  level: { type: "integer", enum: [1, 2, 3] },
+                  key_points: { type: "array", items: { type: "string" } },
+                },
+                required: ["heading", "level"],
+              },
+            },
+          },
+          required: ["primary_keyword", "outline"],
+        },
+        options: {
+          type: "array",
+          minItems: 3,
+          maxItems: 3,
+          items: {
+            type: "object",
+            properties: {
+              option_label: { type: "string", enum: DRAFT_OPTION_LABELS },
+              title: { type: "string" },
+              body_markdown: { type: "string" },
+              primary_keyword: { type: "string" },
+              secondary_keywords: { type: "array", items: { type: "string" } },
+              source_chunk_ids: chunkIdSchema(allowedChunkIds),
+            },
+            required: ["option_label", "title", "body_markdown", "primary_keyword", "source_chunk_ids"],
+          },
+        },
+      },
+      required: ["plan", "options"],
+    },
+  });
+
+  const parsed = buildPlanAndGenerateSchema(allowedChunkIds).parse(result.data);
+  parsed.options = parsed.options.map((o) => ({ ...o, body_markdown: cleanArticleText(o.body_markdown) }));
+
+  return { ...parsed, inputTokens: result.inputTokens, outputTokens: result.outputTokens };
+}
+
+// ---------------------------------------------------------------------------
+// Stage 4: evaluate — 1 batched call across all drafts
+// ---------------------------------------------------------------------------
+
+export async function evaluateDrafts(params: {
+  drafts: Array<{ optionLabel: string; title: string; bodyMarkdown: string; citedExcerpts: ExcerptForPrompt[] }>;
+}) {
+  const draftsBlock = params.drafts
+    .map((d) => {
+      const excerptsBlock = d.citedExcerpts.length
+        ? d.citedExcerpts.map((e) => `[${e.id}] ${e.text}`).join("\n\n")
+        : "(none cited)";
+      return `=== Option ${d.optionLabel}: "${d.title}" ===\n${d.bodyMarkdown}\n\n--- Excerpts this option cites (verify claims against this text, not just against the draft's own prose) ---\n${excerptsBlock}`;
+    })
+    .join("\n\n=====\n\n");
+
+  const userPrompt = `
+Evaluate each of the following draft options against this rubric:
+
+${CONTENT_EVALUATION_RUBRIC}
+
+For unsupported_claims and sections_needing_revision, quote the flagged text VERBATIM from the draft body — do not paraphrase or describe it, since the exact quote is used to highlight it in place for the reviewer.
+
+${draftsBlock}
+`.trim();
+
+  const result = await callTool({
+    model: MODEL_EVAL,
+    system:
+      "You are a rigorous, skeptical content quality reviewer. You have no stake in any draft passing. Flag every claim that isn't traceable to the provided excerpts.",
+    userPrompt,
+    maxTokens: 6000,
+    toolName: "submit_evaluations",
+    toolDescription: "Submit a rubric evaluation for every draft option provided.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        results: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              option_label: { type: "string", enum: DRAFT_OPTION_LABELS },
+              overall_status: { type: "string", enum: ["pass", "revise", "reject"] },
+              criteria: {
+                type: "object",
+                properties: Object.fromEntries(
+                  [
+                    "topic_relevance",
+                    "source_grounding",
+                    "factual_consistency",
+                    "audience_fit",
+                    "tone",
+                    "seo_fit",
+                    "channel_fit",
+                    "clarity",
+                    "completeness",
+                  ].map((key) => [
+                    key,
+                    {
+                      type: "object",
+                      properties: { score: { type: "number", minimum: 1, maximum: 5 }, notes: { type: "string" } },
+                      required: ["score", "notes"],
+                    },
+                  ])
+                ),
+              },
+              unsupported_claims: {
+                type: "array",
+                items: {
+                  type: "object",
+                  properties: { quote: { type: "string" }, reason: { type: "string" } },
+                  required: ["quote", "reason"],
+                },
+              },
+              sections_needing_revision: {
+                type: "array",
+                items: {
+                  type: "object",
+                  properties: { quote: { type: "string" }, reason: { type: "string" } },
+                  required: ["quote", "reason"],
+                },
+              },
+              recommended_changes: { type: "string" },
+            },
+            required: ["option_label", "overall_status", "criteria"],
+          },
+        },
+      },
+      required: ["results"],
+    },
+  });
+
+  const parsed = buildEvaluationSchema().parse(result.data);
+
+  const normalized = parsed.results.map((r) => normalizeEvaluation(r));
+
+  return { results: normalized, inputTokens: result.inputTokens, outputTokens: result.outputTokens };
+}
+
+export type NormalizedEvaluation = ReturnType<typeof normalizeEvaluation>;
+
+/**
+ * Deterministic guardrail: if source_grounding or factual_consistency
+ * scores low, force overall_status to at most 'revise' even if the model
+ * said 'pass'. The raw model output is preserved alongside so the
+ * discrepancy stays visible. See artifact/design.md, Stage 4.
+ */
+function normalizeEvaluation(r: {
+  option_label: "A" | "B" | "C";
+  overall_status: "pass" | "revise" | "reject";
+  criteria: RubricCriteria;
+  unsupported_claims: Array<{ quote: string; reason: string }>;
+  sections_needing_revision: Array<{ quote: string; reason: string }>;
+  recommended_changes: string;
+}) {
+  const scores = Object.values(r.criteria).map((c) => c.score);
+  const combined_score = Math.round((scores.reduce((a, b) => a + b, 0) / scores.length) * 100) / 100;
+
+  let overall_status = r.overall_status;
+  const groundingWeak = r.criteria.source_grounding.score <= 2;
+  const factsWeak = r.criteria.factual_consistency.score <= 2;
+  if ((groundingWeak || factsWeak) && overall_status === "pass") {
+    overall_status = "revise";
+  }
+
+  return {
+    optionLabel: r.option_label,
+    overallStatus: overall_status,
+    combinedScore: combined_score,
+    criteria: r.criteria,
+    unsupportedClaims: r.unsupported_claims,
+    sectionsNeedingRevision: r.sections_needing_revision,
+    recommendedChanges: r.recommended_changes,
+    rawResponse: r,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Stage 5 / human revision: revise weak drafts — batched, reused by both
+// the automated revision loop and the human-requested-AI-revision path.
+// ---------------------------------------------------------------------------
+
+export async function reviseDrafts(params: {
+  items: Array<{
+    optionLabel: string;
+    currentTitle: string;
+    currentBody: string;
+    feedback: string;
+  }>;
+  excerpts: ExcerptForPrompt[];
+}) {
+  const allowedChunkIds = params.excerpts.map((e) => e.id);
+  const excerptsBlock = params.excerpts.length
+    ? params.excerpts.map((e) => `[${e.id}] ${e.text}`).join("\n\n")
+    : "(none available)";
+
+  const itemsBlock = params.items
+    .map(
+      (item) =>
+        `=== Revise option ${item.optionLabel}: "${item.currentTitle}" ===\nCurrent body:\n${item.currentBody}\n\nFeedback to address:\n${item.feedback}`
+    )
+    .join("\n\n=====\n\n");
+
+  const userPrompt = `
+Revise the following draft(s) to address the feedback given for each. Make targeted fixes — preserve what already works, change only what's flagged. Stay grounded in these source excerpts (cite only these IDs, never invent one):
+
+${excerptsBlock}
+
+Continue following these SEO rules:
+
+${SEO_BEST_PRACTICES}
+
+${itemsBlock}
+`.trim();
+
+  const result = await callTool({
+    model: MODEL_REVISE,
+    system:
+      "You are revising a draft based on specific feedback. Make targeted fixes, not a wholesale rewrite. Stay grounded in the provided source excerpts.",
+    userPrompt,
+    maxTokens: 8000,
+    toolName: "submit_revisions",
+    toolDescription: "Submit the revised version of each draft.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        revisions: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              option_label: { type: "string", enum: DRAFT_OPTION_LABELS },
+              title: { type: "string" },
+              body_markdown: { type: "string" },
+              primary_keyword: { type: "string" },
+              secondary_keywords: { type: "array", items: { type: "string" } },
+              source_chunk_ids: chunkIdSchema(allowedChunkIds),
+            },
+            required: ["option_label", "title", "body_markdown", "primary_keyword", "source_chunk_ids"],
+          },
+        },
+      },
+      required: ["revisions"],
+    },
+  });
+
+  const parsed = buildRevisionSchema(allowedChunkIds).parse(result.data);
+  parsed.revisions = parsed.revisions.map((r) => ({ ...r, body_markdown: cleanArticleText(r.body_markdown) }));
+
+  return { ...parsed, inputTokens: result.inputTokens, outputTokens: result.outputTokens };
+}
+
+// ---------------------------------------------------------------------------
+// Stage 7: channel adaptation
+// ---------------------------------------------------------------------------
+
+export async function adaptToChannels(params: {
+  title: string;
+  bodyMarkdown: string;
+  correctionNote?: string;
+}) {
+  const userPrompt = `
+Adapt this approved article into LinkedIn, X, and email newsletter formats, following the platform rules exactly:
+
+${CHANNEL_FORMATTING_RULES}
+
+${params.correctionNote ? `IMPORTANT CORRECTION FROM A PREVIOUS ATTEMPT: ${params.correctionNote}\n` : ""}
+Article title: ${params.title}
+Article body:
+${params.bodyMarkdown}
+`.trim();
+
+  const result = await callTool({
+    model: MODEL_CHANNEL_ADAPT,
+    system:
+      "You are a platform-formatting specialist. Reformat the given article for each channel; do not add new claims beyond what's in the article.",
+    userPrompt,
+    maxTokens: 6000, // was 3000 — too tight for a long article, causing silent truncation (see callTool's stop_reason check)
+    toolName: "submit_channel_adaptations",
+    toolDescription: "Submit the LinkedIn, X, and newsletter adaptations.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        linkedin: {
+          type: "object",
+          properties: { body: { type: "string" } },
+          required: ["body"],
+        },
+        x: {
+          type: "object",
+          properties: { body: { type: "string" }, hashtags: { type: "array", items: { type: "string" } } },
+          required: ["body"],
+        },
+        newsletter: {
+          type: "object",
+          properties: { subject: { type: "string" }, body: { type: "string" } },
+          required: ["subject", "body"],
+        },
+      },
+      required: ["linkedin", "x", "newsletter"],
+    },
+  });
+
+  const parsed = channelAdaptationSchema.parse(result.data);
+
+  return {
+    linkedin: { body: cleanChannelText(parsed.linkedin.body) },
+    x: { body: cleanChannelText(parsed.x.body), hashtags: parsed.x.hashtags },
+    newsletter: { subject: cleanChannelText(parsed.newsletter.subject), body: cleanChannelText(parsed.newsletter.body) },
+    inputTokens: result.inputTokens,
+    outputTokens: result.outputTokens,
+  };
+}

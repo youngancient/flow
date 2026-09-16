@@ -1,26 +1,109 @@
 @import "tailwindcss";
 
+/*
+  "The proofing desk" — see artifact/design.md, "Design language".
+  Cool paper, not the cliché warm-cream/terracotta. Semantic status inks
+  used only on the specific element they describe, never as a background.
+*/
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --paper: #eef0f2;
+  --ink: #12171c;
+  --rule: #d3d8dc;
+  --muted: #6b7580;
+  --approve: #1e6b52;
+  --flag: #b23b2e;
+  --pending: #c68a2e;
 }
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
-
+/* System preference — only when the user hasn't made an explicit choice via ThemeToggle. */
 @media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+  :root:not([data-theme="light"]) {
+    --paper: #14181c;
+    --ink: #eef0f2;
+    --rule: #33393f;
+    --muted: #9aa3ab;
+    --approve: #3f9a7c;
+    --flag: #d9695c;
+    --pending: #dba648;
   }
 }
 
+/* Explicit user choice via ThemeToggle — wins over system preference either way. */
+:root[data-theme="dark"] {
+  --paper: #14181c;
+  --ink: #eef0f2;
+  --rule: #33393f;
+  --muted: #9aa3ab;
+  --approve: #3f9a7c;
+  --flag: #d9695c;
+  --pending: #dba648;
+}
+
+@theme inline {
+  --color-paper: var(--paper);
+  --color-ink: var(--ink);
+  --color-rule: var(--rule);
+  --color-muted: var(--muted);
+  --color-approve: var(--approve);
+  --color-flag: var(--flag);
+  --color-pending: var(--pending);
+  --font-serif: var(--font-newsreader);
+  --font-sans: var(--font-plex-sans);
+}
+
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background: var(--paper);
+  color: var(--ink);
+}
+
+/* Rendered article typography — the reading view (ArticlePreview). */
+.prose-article {
+  font-family: var(--font-serif);
+  line-height: 1.65;
+}
+.prose-article h1 {
+  font-size: 1.75rem;
+  font-weight: 600;
+  margin-bottom: 0.75rem;
+}
+.prose-article h2 {
+  font-size: 1.3rem;
+  font-weight: 600;
+  margin-top: 1.5rem;
+  margin-bottom: 0.5rem;
+}
+.prose-article h3 {
+  font-size: 1.1rem;
+  font-weight: 600;
+  margin-top: 1.1rem;
+  margin-bottom: 0.4rem;
+}
+.prose-article p {
+  margin-bottom: 0.85rem;
+  max-width: 68ch;
+}
+.prose-article a {
+  color: var(--approve);
+  text-decoration: underline;
+}
+
+/* Flagged-quote highlight inside the reading view — see ArticlePreview. */
+mark.flagged {
+  background: color-mix(in srgb, var(--flag) 18%, transparent);
+  color: inherit;
+  border-bottom: 1px solid var(--flag);
+  cursor: help;
+}
+
+/* Status stamp — an angled ink mark, not a rounded SaaS pill. */
+.stamp {
+  display: inline-block;
+  font-family: var(--font-sans);
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  padding: 0.15rem 0.5rem;
+  border: 1.5px solid currentColor;
+  border-radius: 2px;
+  transform: rotate(-1.5deg);
 }

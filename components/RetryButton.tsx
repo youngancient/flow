@@ -1,0 +1,23 @@
+"use client";
+
+import { useState } from "react";
+import { toast } from "sonner";
+import { retryPipelineRun } from "@/app/requests/[id]/actions";
+
+export function RetryButton({ requestId }: { requestId: string }) {
+  const [pending, setPending] = useState(false);
+
+  async function handleRetry() {
+    setPending(true);
+    const res = await retryPipelineRun(requestId);
+    setPending(false);
+    if (!res.ok) toast.error(res.error);
+    else toast.success("Retried");
+  }
+
+  return (
+    <button onClick={handleRetry} disabled={pending} className="cursor-pointer border border-ink px-3 py-1 text-xs disabled:cursor-not-allowed disabled:opacity-50">
+      {pending ? "Retrying…" : "Retry"}
+    </button>
+  );
+}
