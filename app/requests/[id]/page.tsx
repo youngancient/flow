@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { supabaseService } from "@/lib/supabase/service";
+import { requireSessionEmail } from "@/lib/supabase/auth";
 import { StatusBadge } from "@/components/StatusBadge";
 import { PipelineLog } from "@/components/PipelineLog";
 import { SourceList, type SourceRow } from "@/components/SourceList";
@@ -19,9 +20,11 @@ export const maxDuration = 120; // hosts actions.ts's Server Actions (selectDraf
 export default async function RequestPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   const db = supabaseService();
+  const sessionEmail = await requireSessionEmail();
 
   const { data: request } = await db.from("content_requests").select("*").eq("id", id).single();
   if (!request) notFound();
+  const isOwner = request.requested_by === sessionEmail;
 
   const [sourcesRes, chunksRes, draftsRes, evaluationsRes, channelOutputsRes] = await Promise.all([
     db.from("sources").select("*").eq("request_id", id),
@@ -68,6 +71,12 @@ export default async function RequestPage({ params }: { params: Promise<{ id: st
   const evaluationsByDraftId = Object.fromEntries(latestEvaluationByDraftId);
 
   const channelOutputs = channelOutputsRes.data ?? [];
+  // Ground truth for what the channels were actually built from is
+  // channel_outputs.draft_id — never content_requests.selected_draft_id,
+  // which can diverge from it (that's exactly the mismatch the draft-switch
+  // guard in selectDraft exists to prevent/catch, so this label needs to be
+  // able to expose it, not paper over it by showing the current selection).
+  const generatingDraft = (draftsRes.data ?? []).find((d) => d.id === channelOutputs[0]?.draft_id);
   const channelOrder = ["linkedin", "x", "newsletter"];
   const inProgress = !TERMINAL_STAGES.has(request.stage);
 
@@ -79,7 +88,7 @@ export default async function RequestPage({ params }: { params: Promise<{ id: st
         </Link>
         <div className="flex items-center gap-2">
           <StatusBadge status={request.stage} />
-          {request.stage === "failed" && <RetryButton requestId={id} />}
+          {request.stage === "failed" && isOwner && <RetryButton requestId={id} />}
         </div>
       </div>
 
@@ -89,9 +98,10 @@ export default async function RequestPage({ params }: { params: Promise<{ id: st
           for: {request.target_audience}
           {request.source_url ? `, source: ${request.source_url}` : ""}
         </p>
+        <p className="text-xs text-muted">Owned by {isOwner ? "You" : request.requested_by}{!isOwner && " (read only)"}</p>
         {request.low_grounding && (
           <p className="mt-1 text-sm text-pending">
-            Low grounding — no source excerpts cleared the relevance threshold. The draft hedges specific claims.
+            Low grounding: no source excerpts cleared the relevance threshold, so the draft hedges specific claims.
           </p>
         )}
       </div>
@@ -133,7 +143,7 @@ export default async function RequestPage({ params }: { params: Promise<{ id: st
           {draftsRes.data && draftsRes.data.length > 0 && (
             <section>
               <h2 className="mb-3 border-t border-rule pt-4 text-xs font-semibold text-muted">drafts</h2>
-              <div className="flex flex-wrap gap-4">
+              <div className="flex flex-wrap items-start gap-4">
                 {DRAFT_OPTION_LABELS.map((label) => {
                   const versions = draftsByOption.get(label) ?? [];
                   if (versions.length === 0) return null;
@@ -146,6 +156,7 @@ export default async function RequestPage({ params }: { params: Promise<{ id: st
                       evaluationsByDraftId={evaluationsByDraftId}
                       selectedDraftId={request.selected_draft_id}
                       hasChannelOutputs={channelOutputs.length > 0}
+                      isOwner={isOwner}
                     />
                   );
                 })}
@@ -155,11 +166,16 @@ export default async function RequestPage({ params }: { params: Promise<{ id: st
 
           {channelOutputs.length > 0 && (
             <section>
-              <h2 className="mb-3 border-t border-rule pt-4 text-xs font-semibold text-muted">channels</h2>
-              <div className="grid gap-4 md:grid-cols-3">
+              <h2 className="border-t border-rule pt-4 text-xs font-semibold text-muted">channels</h2>
+              {generatingDraft && (
+                <p className="mb-3 text-xs text-muted">
+                  Generated from Option {generatingDraft.option_label} (v{generatingDraft.version})
+                </p>
+              )}
+              <div className="grid items-start gap-4 md:grid-cols-3">
                 {channelOrder.map((channel) => {
                   const output = channelOutputs.find((o) => o.channel === channel);
-                  return output ? <ChannelOutputCard key={output.id} output={output} /> : null;
+                  return output ? <ChannelOutputCard key={output.id} output={output} isOwner={isOwner} /> : null;
                 })}
               </div>
             </section>

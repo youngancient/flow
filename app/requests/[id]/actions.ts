@@ -10,6 +10,14 @@ import { generateChannelOutputs, regenerateSingleChannelOutput } from "@/lib/pip
 import { MAX_HUMAN_REVISION_ROUNDS } from "@/lib/rules";
 import type { ActionResult } from "@/app/actions";
 
+const NOT_OWNER_ERROR = "Only this request's owner can do that";
+
+/** Embedded-resource results come back as either an object or a one-element array, depending on the relation — same unwrap used elsewhere (e.g. lib/pipeline.ts). */
+function unwrapOne<T>(rel: T | T[] | null | undefined): T | null {
+  if (!rel) return null;
+  return Array.isArray(rel) ? (rel[0] ?? null) : rel;
+}
+
 async function getExcerptsByIds(ids: string[]) {
   if (ids.length === 0) return [];
   const db = supabaseService();
@@ -22,12 +30,57 @@ async function getExcerptsByIds(ids: string[]) {
 }
 
 export async function selectDraft(requestId: string, draftId: string): Promise<ActionResult> {
-  await requireSessionEmail();
+  const email = await requireSessionEmail();
   const db = supabaseService();
 
-  const { data: draft } = await db.from("drafts").select("id, request_id").eq("id", draftId).single();
-  if (!draft || draft.request_id !== requestId) {
-    return { ok: false, error: "Draft does not belong to this request" };
+  const { data: draft, error: draftError } = await db
+    .from("drafts")
+    .select("id, request_id, content_requests!drafts_request_id_fkey(requested_by)")
+    .eq("id", draftId)
+    .single();
+  if (draftError) {
+    return { ok: false, error: `Failed to load draft: ${draftError.message}` };
+  }
+  if (!draft) {
+    return { ok: false, error: `Draft not found: ${draftId}` };
+  }
+  if (draft.request_id !== requestId) {
+    return { ok: false, error: `Draft ${draftId} belongs to request ${draft.request_id}, not ${requestId}` };
+  }
+  if (unwrapOne(draft.content_requests)?.requested_by !== email) {
+    return { ok: false, error: NOT_OWNER_ERROR };
+  }
+
+  const { data: current } = await db.from("content_requests").select("selected_draft_id").eq("id", requestId).single();
+  const isSwitchingDraft = Boolean(current?.selected_draft_id) && current!.selected_draft_id !== draftId;
+
+  const { data: existingOutputs } = await db
+    .from("channel_outputs")
+    .select("channel, publish_status")
+    .eq("request_id", requestId);
+  const hasExistingOutputs = (existingOutputs?.length ?? 0) > 0;
+
+  // Switching to a different draft once channels already exist means
+  // regenerating all three from scratch (below) — refuse outright,
+  // all-or-nothing, if any channel has a real external commitment that
+  // can't just be silently overwritten: a sent post can never be
+  // "un-sent," and a scheduled one has a live timer armed against it.
+  if (isSwitchingDraft && hasExistingOutputs) {
+    const sentOrSending = (existingOutputs ?? []).filter((o) => o.publish_status === "sent" || o.publish_status === "sending");
+    const scheduled = (existingOutputs ?? []).filter((o) => o.publish_status === "scheduled");
+    if (sentOrSending.length > 0 || scheduled.length > 0) {
+      const parts: string[] = [];
+      if (sentOrSending.length > 0) {
+        const verb = sentOrSending.length > 1 ? "have" : "has";
+        parts.push(`${sentOrSending.map((o) => o.channel).join(", ")} ${verb} already been sent`);
+      }
+      if (scheduled.length > 0) {
+        const be = scheduled.length > 1 ? "are" : "is";
+        const pronoun = scheduled.length > 1 ? "their" : "its";
+        parts.push(`${scheduled.map((o) => o.channel).join(", ")} ${be} scheduled, cancel ${pronoun} schedule first`);
+      }
+      return { ok: false, error: `Can't switch drafts: ${parts.join("; ")}.` };
+    }
   }
 
   try {
@@ -36,12 +89,7 @@ export async function selectDraft(requestId: string, draftId: string): Promise<A
     return { ok: false, error: err instanceof Error ? err.message : "Failed to select draft" };
   }
 
-  const { count } = await db
-    .from("channel_outputs")
-    .select("id", { count: "exact", head: true })
-    .eq("request_id", requestId);
-
-  if (!count || count === 0) {
+  if (!hasExistingOutputs || isSwitchingDraft) {
     try {
       await generateChannelOutputs(requestId, draftId);
     } catch (err) {
@@ -65,8 +113,16 @@ export async function editDraft(
   const email = await requireSessionEmail();
   const db = supabaseService();
 
-  const { data: draft } = await db.from("drafts").select("*").eq("id", draftId).single();
+  const { data: draft, error: draftError } = await db
+    .from("drafts")
+    .select("*, content_requests!drafts_request_id_fkey(requested_by)")
+    .eq("id", draftId)
+    .single();
+  if (draftError) return { ok: false, error: `Failed to load draft: ${draftError.message}` };
   if (!draft) return { ok: false, error: "Draft not found" };
+  if (unwrapOne(draft.content_requests)?.requested_by !== email) {
+    return { ok: false, error: NOT_OWNER_ERROR };
+  }
 
   try {
     await assertOk(
@@ -97,8 +153,16 @@ export async function requestDraftRevision(draftId: string, feedback: string): P
   const email = await requireSessionEmail();
   const db = supabaseService();
 
-  const { data: draft } = await db.from("drafts").select("*").eq("id", draftId).single();
+  const { data: draft, error: draftError } = await db
+    .from("drafts")
+    .select("*, content_requests!drafts_request_id_fkey(requested_by)")
+    .eq("id", draftId)
+    .single();
+  if (draftError) return { ok: false, error: `Failed to load draft: ${draftError.message}` };
   if (!draft) return { ok: false, error: "Draft not found" };
+  if (unwrapOne(draft.content_requests)?.requested_by !== email) {
+    return { ok: false, error: NOT_OWNER_ERROR };
+  }
 
   const { count } = await db
     .from("drafts")
@@ -156,8 +220,15 @@ export async function approveChannelOutput(channelOutputId: string, editedBody?:
   const email = await requireSessionEmail();
   const db = supabaseService();
 
-  const { data: output } = await db.from("channel_outputs").select("request_id, publish_status").eq("id", channelOutputId).single();
+  const { data: output } = await db
+    .from("channel_outputs")
+    .select("request_id, publish_status, content_requests(requested_by)")
+    .eq("id", channelOutputId)
+    .single();
   if (!output) return { ok: false, error: "Channel output not found" };
+  if (unwrapOne(output.content_requests)?.requested_by !== email) {
+    return { ok: false, error: NOT_OWNER_ERROR };
+  }
 
   try {
     await assertOk(
@@ -187,8 +258,15 @@ export async function rejectChannelOutput(channelOutputId: string): Promise<Acti
   const email = await requireSessionEmail();
   const db = supabaseService();
 
-  const { data: output } = await db.from("channel_outputs").select("request_id").eq("id", channelOutputId).single();
+  const { data: output } = await db
+    .from("channel_outputs")
+    .select("request_id, content_requests(requested_by)")
+    .eq("id", channelOutputId)
+    .single();
   if (!output) return { ok: false, error: "Channel output not found" };
+  if (unwrapOne(output.content_requests)?.requested_by !== email) {
+    return { ok: false, error: NOT_OWNER_ERROR };
+  }
 
   try {
     await assertOk(
@@ -206,12 +284,69 @@ export async function rejectChannelOutput(channelOutputId: string): Promise<Acti
   return { ok: true };
 }
 
-export async function regenerateChannelOutput(channelOutputId: string, feedback?: string): Promise<ActionResult> {
-  await requireSessionEmail();
+/**
+ * Reverts an approved-but-not-yet-published channel output back to
+ * pending_review, so an approval isn't a one-way door — the reviewer can
+ * change their mind before anything's actually gone out. Refuses if
+ * publish_status is 'scheduled' (there's a live timer armed against it —
+ * cancel that first, same reasoning as selectDraft's switch guard) or
+ * 'sent'/'sending' (already happened or in flight, can never be undone).
+ */
+export async function unapproveChannelOutput(channelOutputId: string): Promise<ActionResult> {
+  const email = await requireSessionEmail();
   const db = supabaseService();
 
-  const { data: output } = await db.from("channel_outputs").select("request_id").eq("id", channelOutputId).single();
+  const { data: output } = await db
+    .from("channel_outputs")
+    .select("request_id, review_status, publish_status, content_requests(requested_by)")
+    .eq("id", channelOutputId)
+    .single();
   if (!output) return { ok: false, error: "Channel output not found" };
+  if (unwrapOne(output.content_requests)?.requested_by !== email) {
+    return { ok: false, error: NOT_OWNER_ERROR };
+  }
+  if (output.review_status !== "approved") return { ok: false, error: "This isn't currently approved" };
+  if (output.publish_status === "scheduled") return { ok: false, error: "Cancel its schedule first" };
+  if (output.publish_status === "sent" || output.publish_status === "sending") {
+    return { ok: false, error: "This has already been sent and can't be unapproved" };
+  }
+
+  try {
+    await assertOk(
+      db
+        .from("channel_outputs")
+        .update({
+          review_status: "pending_review",
+          publish_status: "not_queued",
+          reviewed_by: null,
+          reviewed_at: null,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", channelOutputId),
+      "channel_outputs unapprove update"
+    );
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : "Failed to unapprove" };
+  }
+
+  revalidatePath(`/requests/${output.request_id}`);
+  revalidatePath("/queue");
+  return { ok: true };
+}
+
+export async function regenerateChannelOutput(channelOutputId: string, feedback?: string): Promise<ActionResult> {
+  const email = await requireSessionEmail();
+  const db = supabaseService();
+
+  const { data: output } = await db
+    .from("channel_outputs")
+    .select("request_id, content_requests(requested_by)")
+    .eq("id", channelOutputId)
+    .single();
+  if (!output) return { ok: false, error: "Channel output not found" };
+  if (unwrapOne(output.content_requests)?.requested_by !== email) {
+    return { ok: false, error: NOT_OWNER_ERROR };
+  }
 
   try {
     await regenerateSingleChannelOutput(channelOutputId, feedback);
@@ -224,11 +359,18 @@ export async function regenerateChannelOutput(channelOutputId: string, feedback?
 }
 
 export async function markSocialPosted(channelOutputId: string): Promise<ActionResult> {
-  await requireSessionEmail();
+  const email = await requireSessionEmail();
   const db = supabaseService();
 
-  const { data: output } = await db.from("channel_outputs").select("request_id, review_status").eq("id", channelOutputId).single();
+  const { data: output } = await db
+    .from("channel_outputs")
+    .select("request_id, review_status, content_requests(requested_by)")
+    .eq("id", channelOutputId)
+    .single();
   if (!output) return { ok: false, error: "Channel output not found" };
+  if (unwrapOne(output.content_requests)?.requested_by !== email) {
+    return { ok: false, error: NOT_OWNER_ERROR };
+  }
   if (output.review_status !== "approved") return { ok: false, error: "Cannot publish before approval" };
 
   try {
@@ -249,19 +391,30 @@ export async function markSocialPosted(channelOutputId: string): Promise<ActionR
 }
 
 export async function scheduleSocialPost(channelOutputId: string, scheduledFor: string): Promise<ActionResult> {
-  await requireSessionEmail();
+  const email = await requireSessionEmail();
   const db = supabaseService();
 
-  const { data: output } = await db.from("channel_outputs").select("request_id, review_status").eq("id", channelOutputId).single();
+  const { data: output } = await db
+    .from("channel_outputs")
+    .select("request_id, review_status, publish_status, content_requests(requested_by)")
+    .eq("id", channelOutputId)
+    .single();
   if (!output) return { ok: false, error: "Channel output not found" };
+  if (unwrapOne(output.content_requests)?.requested_by !== email) {
+    return { ok: false, error: NOT_OWNER_ERROR };
+  }
   if (output.review_status !== "approved") return { ok: false, error: "Cannot schedule before approval" };
+  if (output.publish_status === "sent" || output.publish_status === "sending") {
+    return { ok: false, error: "This has already been sent and can't be scheduled again" };
+  }
 
   try {
     await assertOk(
       db
         .from("channel_outputs")
         .update({ publish_status: "scheduled", scheduled_for: scheduledFor, updated_at: new Date().toISOString() })
-        .eq("id", channelOutputId),
+        .eq("id", channelOutputId)
+        .in("publish_status", ["not_queued", "queued", "scheduled", "failed"]),
       "channel_outputs schedule update"
     );
   } catch (err) {
@@ -273,15 +426,52 @@ export async function scheduleSocialPost(channelOutputId: string, scheduledFor: 
   return { ok: true };
 }
 
-// Newsletter send/schedule are Route Handlers, not Server Actions — see
-// app/api/publish/newsletter/[channelOutputId]/{send,schedule}/route.ts.
+export async function cancelScheduledSocialPost(channelOutputId: string): Promise<ActionResult> {
+  const email = await requireSessionEmail();
+  const db = supabaseService();
+
+  const { data: output } = await db
+    .from("channel_outputs")
+    .select("request_id, publish_status, content_requests(requested_by)")
+    .eq("id", channelOutputId)
+    .single();
+  if (!output) return { ok: false, error: "Channel output not found" };
+  if (unwrapOne(output.content_requests)?.requested_by !== email) {
+    return { ok: false, error: NOT_OWNER_ERROR };
+  }
+  if (output.publish_status !== "scheduled") return { ok: false, error: "This isn't currently scheduled" };
+
+  try {
+    await assertOk(
+      db
+        .from("channel_outputs")
+        .update({ publish_status: "queued", scheduled_for: null, updated_at: new Date().toISOString() })
+        .eq("id", channelOutputId),
+      "channel_outputs cancel-schedule update"
+    );
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : "Failed to cancel schedule" };
+  }
+
+  revalidatePath(`/requests/${output.request_id}`);
+  revalidatePath("/queue");
+  return { ok: true };
+}
+
+// Newsletter send/schedule/cancel are Route Handlers, not Server Actions —
+// see app/api/publish/newsletter/[channelOutputId]/{send,schedule,cancel}/route.ts.
 // ChannelOutputCard calls those directly via fetch().
 
 export async function retryPipelineRun(requestId: string): Promise<ActionResult> {
-  await requireSessionEmail();
+  const email = await requireSessionEmail();
   const { runPipeline } = await import("@/lib/pipeline");
 
   const db = supabaseService();
+
+  const { data: request } = await db.from("content_requests").select("requested_by").eq("id", requestId).single();
+  if (!request) return { ok: false, error: "Request not found" };
+  if (request.requested_by !== email) return { ok: false, error: NOT_OWNER_ERROR };
+
   // Reset to a non-terminal stage *before* kicking off the background run,
   // not after — runPipeline's own first setStage() call only happens once
   // after() actually starts executing, which isn't guaranteed by the time

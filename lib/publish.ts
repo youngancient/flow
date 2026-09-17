@@ -3,6 +3,7 @@ import { brevo, brevoSender, brevoListId } from "./brevo";
 import { supabaseService } from "./supabase/service";
 import { assertOk } from "./supabase/assert";
 import { notifyNewsletterSent } from "./notify";
+import { postPipelineError } from "./discord";
 
 export type SendResult =
   | { status: "sent" }
@@ -88,6 +89,13 @@ export async function sendNewsletterNow(channelOutputId: string): Promise<SendRe
     } catch (writeErr) {
       console.error(`channel_outputs failed-send update also failed for ${channelOutputId}:`, writeErr);
     }
+    // A manual "Send now" failure at least shows a toast to whoever clicked
+    // it — but this same path is also what the unattended cron sweep
+    // (run-due) hits, where there's no one present to see anything. Fires
+    // the same Discord alert pipeline failures use, so a 3am Brevo outage
+    // doesn't sit invisible in last_error until someone happens to open
+    // /queue.
+    postPipelineError({ requestId: claimed.request_id, stage: "newsletter_send", error: message });
     return { status: "failed", error: message };
   }
 }
@@ -99,7 +107,11 @@ export async function scheduleNewsletter(channelOutputId: string, scheduledFor: 
       .from("channel_outputs")
       .update({ publish_status: "scheduled", scheduled_for: scheduledFor, updated_at: new Date().toISOString() })
       .eq("id", channelOutputId)
-      .eq("review_status", "approved"),
+      .eq("review_status", "approved")
+      // Defense-in-depth backstop, not the only guard (the route handler
+      // above already checks this with a clear error) — a sent/sending row
+      // can never be re-scheduled no matter which caller reaches this.
+      .in("publish_status", ["not_queued", "queued", "scheduled", "failed"]),
     "channel_outputs schedule update"
   );
 }

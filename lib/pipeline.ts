@@ -8,6 +8,8 @@ import {
   evaluateDrafts,
   reviseDrafts,
   adaptToChannels,
+  adaptSingleChannel,
+  type ChannelName,
   type ExcerptForPrompt,
   MODEL_DRAFTING,
   MODEL_EVAL,
@@ -16,7 +18,7 @@ import {
 import { postPipelineError } from "./discord";
 import { notifyReadyForReview } from "./notify";
 import { redact } from "./redact";
-import { MIN_SIMILARITY, MAX_REVISION_ROUNDS, DRAFT_OPTION_LABELS } from "./rules";
+import { MIN_SIMILARITY, MAX_REVISION_ROUNDS, DRAFT_OPTION_LABELS, X_CHAR_LIMIT, xPostCharCount } from "./rules";
 
 type Stage = "researching" | "planning_drafting" | "evaluating" | "revising";
 
@@ -494,10 +496,14 @@ function countWords(text: string): number {
   return text.trim().split(/\s+/).filter(Boolean).length;
 }
 
-function checkChannelViolations(result: { x: { hashtags: string[] }; newsletter: { body: string } }): string | null {
+function checkChannelViolations(result: { x: { body: string; hashtags: string[] }; newsletter: { body: string } }): string | null {
   const issues: string[] = [];
   if (result.x.hashtags.length > 2) {
     issues.push(`The X post has ${result.x.hashtags.length} hashtags; use at most 2.`);
+  }
+  const xLength = xPostCharCount(result.x.body, result.x.hashtags);
+  if (xLength > X_CHAR_LIMIT) {
+    issues.push(`The X post (with hashtags) is ${xLength} characters; it must be ${X_CHAR_LIMIT} or fewer.`);
   }
   const wordCount = countWords(result.newsletter.body);
   if (wordCount < 250 || wordCount > 600) {
@@ -506,12 +512,45 @@ function checkChannelViolations(result: { x: { hashtags: string[] }; newsletter:
   return issues.length > 0 ? issues.join(" ") : null;
 }
 
+/** Same recompute discipline as checkChannelViolations, scoped to one channel — for regenerateSingleChannelOutput. */
+function checkSingleChannelViolation(channel: ChannelName, result: { body: string; hashtags?: string[] }): string | null {
+  if (channel === "x") {
+    const hashtags = result.hashtags ?? [];
+    if (hashtags.length > 2) {
+      return `The X post has ${hashtags.length} hashtags; use at most 2.`;
+    }
+    const xLength = xPostCharCount(result.body, hashtags);
+    if (xLength > X_CHAR_LIMIT) {
+      return `The X post (with hashtags) is ${xLength} characters; it must be ${X_CHAR_LIMIT} or fewer.`;
+    }
+  }
+  if (channel === "newsletter") {
+    const wordCount = countWords(result.body);
+    if (wordCount < 250 || wordCount > 600) {
+      return `The newsletter body is ${wordCount} words; it must be between 250 and 600.`;
+    }
+  }
+  return null;
+}
+
+/**
+ * Max total attempts (initial + corrections) for a channel-adaptation call
+ * to satisfy the deterministic checks (hashtag count, X length, newsletter
+ * word count). Hashtags get a hard slice() regardless as a true safety net,
+ * but body text can't be safely hard-truncated without cutting it off
+ * mid-sentence — so length violations need the model to actually comply,
+ * re-checked after every attempt, not just retried once and accepted
+ * either way.
+ */
+const MAX_CHANNEL_ADAPT_ATTEMPTS = 3;
+
 /**
  * Generates all three channel outputs for a selected draft, on demand —
  * never proactively for unpicked options (artifact/design.md, Stage 7).
- * Server-recomputes anything load-bearing (hashtag count, word count)
- * rather than trusting the model; regenerates once with a correction if
- * either is out of bounds.
+ * Server-recomputes anything load-bearing (hashtag count, X length,
+ * newsletter word count) rather than trusting the model; keeps retrying
+ * with the violation fed back until it actually complies (or gives up
+ * loudly — see MAX_CHANNEL_ADAPT_ATTEMPTS).
  */
 export async function generateChannelOutputs(requestId: string, draftId: string): Promise<void> {
   const db = supabaseService();
@@ -520,9 +559,15 @@ export async function generateChannelOutputs(requestId: string, draftId: string)
     if (!draft) throw new Error(`Draft not found: ${draftId}`);
 
     let result = await adaptToChannels({ title: draft.title, bodyMarkdown: draft.body_markdown });
-    const violation = checkChannelViolations(result);
-    if (violation) {
+    let violation = checkChannelViolations(result);
+    let attempts = 1;
+    while (violation && attempts < MAX_CHANNEL_ADAPT_ATTEMPTS) {
       result = await adaptToChannels({ title: draft.title, bodyMarkdown: draft.body_markdown, correctionNote: violation });
+      violation = checkChannelViolations(result);
+      attempts++;
+    }
+    if (violation) {
+      throw new Error(`Channel adaptation still violates format rules after ${MAX_CHANNEL_ADAPT_ATTEMPTS} attempts: ${violation}`);
     }
 
     const hashtags = result.x.hashtags.slice(0, 2); // hard cap regardless — the recompute, not just the retry
@@ -532,12 +577,18 @@ export async function generateChannelOutputs(requestId: string, draftId: string)
     // column's default. hashtags is `not null default '{}'`, so the
     // linkedin/newsletter rows (which never set it) were sent as NULL and
     // rejected. Every row needs the exact same key set explicitly.
+    //
+    // This also runs when switching the selected draft after channels
+    // already existed (selectDraft in app/requests/[id]/actions.ts, guarded
+    // there against sent/scheduled channels) — so review/publish state and
+    // any stale reviewer/schedule/error attribution from the previous
+    // draft's channel outputs must be fully reset here, not left behind.
     await assertOk(
       db.from("channel_outputs").upsert(
         [
-          { request_id: requestId, draft_id: draftId, channel: "linkedin", subject: null, body: result.linkedin.body, hashtags: [], review_status: "pending_review", publish_status: "not_queued" },
-          { request_id: requestId, draft_id: draftId, channel: "x", subject: null, body: result.x.body, hashtags, review_status: "pending_review", publish_status: "not_queued" },
-          { request_id: requestId, draft_id: draftId, channel: "newsletter", subject: result.newsletter.subject, body: result.newsletter.body, hashtags: [], review_status: "pending_review", publish_status: "not_queued" },
+          { request_id: requestId, draft_id: draftId, channel: "linkedin", subject: null, body: result.linkedin.body, hashtags: [], review_status: "pending_review", publish_status: "not_queued", reviewed_by: null, reviewed_at: null, scheduled_for: null, sent_at: null, last_error: null },
+          { request_id: requestId, draft_id: draftId, channel: "x", subject: null, body: result.x.body, hashtags, review_status: "pending_review", publish_status: "not_queued", reviewed_by: null, reviewed_at: null, scheduled_for: null, sent_at: null, last_error: null },
+          { request_id: requestId, draft_id: draftId, channel: "newsletter", subject: result.newsletter.subject, body: result.newsletter.body, hashtags: [], review_status: "pending_review", publish_status: "not_queued", reviewed_by: null, reviewed_at: null, scheduled_for: null, sent_at: null, last_error: null },
         ],
         { onConflict: "request_id,channel" }
       ),
@@ -549,7 +600,7 @@ export async function generateChannelOutputs(requestId: string, draftId: string)
       model: MODEL_CHANNEL_ADAPT,
       tokens: { input: result.inputTokens, output: result.outputTokens },
       cost_usd: estimateCostUsd(MODEL_CHANNEL_ADAPT, result.inputTokens, result.outputTokens),
-      regenerated_for_violation: Boolean(violation),
+      regenerated_for_violation: attempts > 1,
     });
   } catch (err) {
     // A failure here used to be visible only as a toast a reviewer could
@@ -563,7 +614,15 @@ export async function generateChannelOutputs(requestId: string, draftId: string)
   }
 }
 
-/** Regenerates a single channel's output, keeping the other two untouched. */
+/**
+ * Regenerates a single channel's output, keeping the other two untouched.
+ * Uses adaptSingleChannel (not adaptToChannels) so the model is only ever
+ * asked for the one channel actually being regenerated — see
+ * lib/claude.ts's adaptSingleChannel comment for why the all-three call was
+ * unreliable here specifically (a real bug caught in use: single-channel
+ * feedback led the model to omit the other two required objects entirely,
+ * surfacing as a raw Zod "Required" error with no pipeline_log trace).
+ */
 export async function regenerateSingleChannelOutput(channelOutputId: string, feedback?: string): Promise<void> {
   const db = supabaseService();
   const { data: output } = await db
@@ -576,24 +635,55 @@ export async function regenerateSingleChannelOutput(channelOutputId: string, fee
   const draft = Array.isArray(output.drafts) ? output.drafts[0] : output.drafts;
   if (!draft) throw new Error(`Draft for channel output not found: ${channelOutputId}`);
 
-  const result = await adaptToChannels({
-    title: draft.title,
-    bodyMarkdown: draft.body_markdown,
-    correctionNote: feedback,
-  });
+  const channel = output.channel as ChannelName;
 
-  const patch =
-    output.channel === "linkedin"
-      ? { body: result.linkedin.body }
-      : output.channel === "x"
-        ? { body: result.x.body, hashtags: result.x.hashtags.slice(0, 2) }
-        : { subject: result.newsletter.subject, body: result.newsletter.body };
+  try {
+    let result = await adaptSingleChannel({ channel, title: draft.title, bodyMarkdown: draft.body_markdown, correctionNote: feedback });
+    let violation = checkSingleChannelViolation(channel, result);
+    let attempts = 1;
+    while (violation && attempts < MAX_CHANNEL_ADAPT_ATTEMPTS) {
+      result = await adaptSingleChannel({
+        channel,
+        title: draft.title,
+        bodyMarkdown: draft.body_markdown,
+        correctionNote: [feedback, violation].filter(Boolean).join("\n"),
+      });
+      violation = checkSingleChannelViolation(channel, result);
+      attempts++;
+    }
+    if (violation) {
+      throw new Error(`${channel} adaptation still violates format rules after ${MAX_CHANNEL_ADAPT_ATTEMPTS} attempts: ${violation}`);
+    }
 
-  await assertOk(
-    db
-      .from("channel_outputs")
-      .update({ ...patch, review_status: "pending_review", updated_at: new Date().toISOString() })
-      .eq("id", channelOutputId),
-    "channel_outputs regenerate update"
-  );
+    const patch =
+      channel === "linkedin"
+        ? { body: result.body }
+        : channel === "x"
+          ? { body: result.body, hashtags: (result.hashtags ?? []).slice(0, 2) }
+          : { subject: result.subject, body: result.body };
+
+    await assertOk(
+      db
+        .from("channel_outputs")
+        .update({ ...patch, review_status: "pending_review", updated_at: new Date().toISOString() })
+        .eq("id", channelOutputId),
+      "channel_outputs regenerate update"
+    );
+
+    await appendLog(output.request_id, {
+      stage: "channel_regenerate",
+      channel,
+      model: MODEL_CHANNEL_ADAPT,
+      tokens: { input: result.inputTokens, output: result.outputTokens },
+      cost_usd: estimateCostUsd(MODEL_CHANNEL_ADAPT, result.inputTokens, result.outputTokens),
+      regenerated_for_violation: attempts > 1,
+    });
+  } catch (err) {
+    // Same discipline as generateChannelOutputs: log to this request's
+    // pipeline_log before rethrowing, so a failure here is never visible
+    // only as a toast a reviewer could miss.
+    const message = err instanceof Error ? err.message : String(err);
+    await appendLog(output.request_id, { stage: "channel_regenerate", channel, ok: false, error: message });
+    throw err;
+  }
 }

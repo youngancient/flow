@@ -22,13 +22,13 @@ export function brevo(): BrevoClient {
 export function brevoSender(): { email: string; name: string } {
   const email = process.env.BREVO_SENDER_EMAIL;
   const name = process.env.BREVO_SENDER_NAME ?? "Flow";
-  if (!email) throw new Error("Missing BREVO_SENDER_EMAIL env var — must be a verified sender in Brevo");
+  if (!email) throw new Error("Missing BREVO_SENDER_EMAIL env var. It must be a verified sender in Brevo.");
   return { email, name };
 }
 
 export function brevoListId(): number {
   const raw = process.env.BREVO_LIST_ID;
-  if (!raw) throw new Error("Missing BREVO_LIST_ID env var — create a list in the Brevo dashboard first");
+  if (!raw) throw new Error("Missing BREVO_LIST_ID env var. Create a list in the Brevo dashboard first.");
   const id = Number(raw);
   if (!Number.isInteger(id)) throw new Error(`BREVO_LIST_ID is not a valid integer: ${raw}`);
   return id;

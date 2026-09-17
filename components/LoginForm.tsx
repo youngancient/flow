@@ -4,6 +4,7 @@ import { useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { toast } from "sonner";
 import { createBrowserAuthClient } from "@/lib/supabase/browser";
+import { Spinner } from "./Spinner";
 
 export function LoginForm() {
   const router = useRouter();
@@ -59,8 +60,9 @@ export function LoginForm() {
       <button
         type="submit"
         disabled={loading}
-        className="mt-2 cursor-pointer rounded-[3px] border border-ink bg-ink px-4 py-2 text-sm font-medium text-paper transition-opacity disabled:cursor-not-allowed disabled:opacity-50"
+        className="mt-2 inline-flex cursor-pointer items-center justify-center gap-1.5 rounded-[3px] border border-ink bg-ink px-4 py-2 text-sm font-medium text-paper transition-opacity disabled:cursor-not-allowed disabled:opacity-50"
       >
+        {loading && <Spinner />}
         {loading ? "Logging in…" : "Log in"}
       </button>
     </form>

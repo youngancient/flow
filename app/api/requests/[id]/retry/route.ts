@@ -13,9 +13,18 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
   }
 
   const { id } = await params;
+  const db = supabaseService();
+
+  const { data: existing } = await db.from("content_requests").select("requested_by").eq("id", id).single();
+  if (!existing) {
+    return NextResponse.json({ ok: false, error: "Request not found" }, { status: 404 });
+  }
+  if (existing.requested_by !== actingEmail) {
+    return NextResponse.json({ ok: false, error: "Only this request's owner can do that" }, { status: 403 });
+  }
+
   await runPipeline(id);
 
-  const db = supabaseService();
   const { data: final } = await db.from("content_requests").select("*").eq("id", id).single();
   return NextResponse.json({ ok: final?.stage !== "failed", data: final });
 }

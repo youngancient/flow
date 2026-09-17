@@ -31,7 +31,7 @@ export const SEO_BEST_PRACTICES = `
 - Keep claims grounded in reviewed source material.
 `.trim();
 
-export const CHANNEL_FORMATTING_RULES = `
+const LINKEDIN_FORMATTING_RULES = `
 ## LinkedIn Post
 
 - Use the PAS copywriting structure: problem, agitation, solution.
@@ -40,15 +40,20 @@ export const CHANNEL_FORMATTING_RULES = `
 - Use a small number of relevant emojis only when they fit the brand voice.
 - End with a clear call to action.
 - Include a relevant image or carousel if useful.
+`.trim();
 
+const X_FORMATTING_RULES = `
 ## X Post
 
 - Lead with the main benefit, insight, or hook.
 - Keep the post focused on one core idea.
 - Use line breaks for readability.
+- Keep the total post length, including hashtags, under 280 characters. Short posts get read more.
 - Use no more than 1 to 2 relevant hashtags.
 - Tag another account only if the tag adds value.
+`.trim();
 
+const NEWSLETTER_FORMATTING_RULES = `
 ## Email Newsletter
 
 - Use a strong subject line with a clear benefit or point of intrigue.
@@ -60,6 +65,20 @@ export const CHANNEL_FORMATTING_RULES = `
 - Write like you are speaking to a smart, busy reader who trusts you to send something useful.
 - Keep the newsletter between 250 and 600 words.
 `.trim();
+
+/** Combined, for the initial 3-channel generation call (adaptToChannels). */
+export const CHANNEL_FORMATTING_RULES = [
+  LINKEDIN_FORMATTING_RULES,
+  X_FORMATTING_RULES,
+  NEWSLETTER_FORMATTING_RULES,
+].join("\n\n");
+
+/** Per-channel, for a single-channel regenerate call (adaptSingleChannel) — only the relevant platform's rules go in the prompt. */
+export const CHANNEL_RULES_BY_CHANNEL = {
+  linkedin: LINKEDIN_FORMATTING_RULES,
+  x: X_FORMATTING_RULES,
+  newsletter: NEWSLETTER_FORMATTING_RULES,
+} as const;
 
 export const CONTENT_EVALUATION_RUBRIC = `
 ## Evaluation Criteria
@@ -118,3 +137,16 @@ export const MIN_SIMILARITY = 0.35;
 export const MAX_REVISION_ROUNDS = 2;
 export const MAX_HUMAN_REVISION_ROUNDS = 3;
 export const DRAFT_OPTION_LABELS = ["A", "B", "C"] as const;
+
+/**
+ * Standard (non-Premium) X post limit — assumed for this app's posting
+ * account. Shared by the server-side generation/regeneration checks
+ * (lib/pipeline.ts) and the client-side preview counter (XPreview.tsx) so
+ * they can never disagree on what counts toward the limit.
+ */
+export const X_CHAR_LIMIT = 280;
+
+/** Total X post length as X counts it: the body plus every hashtag, each with its leading space and "#". */
+export function xPostCharCount(body: string, hashtags: string[]): number {
+  return body.length + hashtags.reduce((sum, h) => sum + ` #${h}`.length, 0);
+}

@@ -2,6 +2,7 @@
 
 import { useActionState, useEffect, useState } from "react";
 import { createContentRequest, type ActionResult } from "@/app/actions";
+import { Spinner } from "./Spinner";
 
 export function RequestForm() {
   // Generated client-only, after mount — not in the render-time state
@@ -89,8 +90,9 @@ export function RequestForm() {
       <button
         type="submit"
         disabled={isPending}
-        className="mt-1 cursor-pointer self-start border border-ink bg-ink px-4 py-2 text-sm font-medium text-paper disabled:cursor-not-allowed disabled:opacity-60"
+        className="mt-1 inline-flex cursor-pointer items-center gap-1.5 self-start border border-ink bg-ink px-4 py-2 text-sm font-medium text-paper disabled:cursor-not-allowed disabled:opacity-60"
       >
+        {isPending && <Spinner />}
         {isPending ? "Submitting…" : "Submit request"}
       </button>
     </form>

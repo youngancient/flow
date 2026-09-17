@@ -106,18 +106,29 @@ export function buildRevisionSchema(allowedChunkIds: string[]) {
   });
 }
 
+const linkedinOutputSchema = z.object({
+  body: z.string().min(1),
+});
+const xOutputSchema = z.object({
+  body: z.string().min(1),
+  hashtags: z.array(z.string()).max(4).default([]),
+});
+const newsletterOutputSchema = z.object({
+  subject: z.string().min(1),
+  body: z.string().min(1),
+});
+
 export const channelAdaptationSchema = z.object({
-  linkedin: z.object({
-    body: z.string().min(1),
-  }),
-  x: z.object({
-    body: z.string().min(1),
-    hashtags: z.array(z.string()).max(4).default([]),
-  }),
-  newsletter: z.object({
-    subject: z.string().min(1),
-    body: z.string().min(1),
-  }),
+  linkedin: linkedinOutputSchema,
+  x: xOutputSchema,
+  newsletter: newsletterOutputSchema,
 });
 
 export type ChannelAdaptation = z.infer<typeof channelAdaptationSchema>;
+
+/** Per-channel schemas for a single-channel regenerate call (adaptSingleChannel in lib/claude.ts). */
+export const singleChannelSchemas = {
+  linkedin: linkedinOutputSchema,
+  x: xOutputSchema,
+  newsletter: newsletterOutputSchema,
+} as const;

@@ -1,4 +1,5 @@
 import type { SubscriberPreview } from "@/lib/brevo";
+import { formatDate } from "@/lib/format";
 
 /** Read-only — no add/remove/edit here. See artifact/design.md, "Newsletter subscribers". */
 export function SubscriberList({ preview }: { preview: SubscriberPreview }) {
@@ -6,7 +7,7 @@ export function SubscriberList({ preview }: { preview: SubscriberPreview }) {
   const remaining = totalCount - rows.length;
 
   if (totalCount === 0) {
-    return <p className="text-xs text-muted">No subscribers yet — add some in the Brevo dashboard.</p>;
+    return <p className="text-xs text-muted">No subscribers yet. Add some in the Brevo dashboard.</p>;
   }
 
   return (
@@ -19,14 +20,14 @@ export function SubscriberList({ preview }: { preview: SubscriberPreview }) {
           <li key={row.email} className="flex items-center justify-between gap-4">
             <span className={row.unsubscribed ? "text-muted line-through" : ""}>{row.email}</span>
             <span className="shrink-0 text-xs text-muted">
-              {row.unsubscribed ? "unsubscribed" : `since ${new Date(row.createdAt).toLocaleDateString()}`}
+              {row.unsubscribed ? "unsubscribed" : `since ${formatDate(row.createdAt)}`}
             </span>
           </li>
         ))}
       </ul>
       {remaining > 0 && (
         <p className="text-xs text-muted">
-          +{remaining} more —{" "}
+          +{remaining} more,{" "}
           <a href="https://app.brevo.com" target="_blank" rel="noreferrer" className="underline">
             see the full list in Brevo
           </a>

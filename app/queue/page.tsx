@@ -41,14 +41,12 @@ export default async function QueuePage() {
   return (
     <main className="mx-auto flex w-full max-w-4xl flex-1 flex-col gap-6 px-6 py-12">
       <div className="flex items-center justify-between">
-        <h1 className="font-serif text-2xl">Publishing queue</h1>
-        <div className="flex items-center gap-4">
-          <ThemeToggle />
-          <Link href="/" className="text-sm text-muted underline">
-            Back
-          </Link>
-        </div>
+        <Link href="/" className="text-sm text-muted underline">
+          ← Home
+        </Link>
+        <ThemeToggle />
       </div>
+      <h1 className="font-serif text-2xl">Publishing queue</h1>
       <section className="flex flex-col gap-2 border-b border-rule pb-6">
         <h2 className="text-xs font-semibold text-muted">Newsletter subscribers</h2>
         <p className="text-xs text-muted">

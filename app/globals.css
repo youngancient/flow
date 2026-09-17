@@ -80,7 +80,6 @@ body {
 }
 .prose-article p {
   margin-bottom: 0.85rem;
-  max-width: 68ch;
 }
 .prose-article a {
   color: var(--approve);

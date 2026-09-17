@@ -2,8 +2,8 @@ import { NextResponse, type NextRequest } from "next/server";
 import { requireApiAuth } from "@/lib/supabase/auth";
 import { supabaseService } from "@/lib/supabase/service";
 import { assertOk } from "@/lib/supabase/assert";
-import { sendNewsletterNow } from "@/lib/publish";
 
+/** Reverts a scheduled newsletter back to approved/queued, clearing scheduled_for — the counterpart to .../schedule. */
 export async function POST(request: NextRequest, { params }: { params: Promise<{ channelOutputId: string }> }) {
   const actingEmail = await requireApiAuth(request);
   if (!actingEmail) {
@@ -15,10 +15,9 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
   const { data: output } = await db
     .from("channel_outputs")
-    .select("review_status, reviewed_by, content_requests(requested_by)")
+    .select("publish_status, content_requests(requested_by)")
     .eq("id", channelOutputId)
     .single();
-
   if (!output) {
     return NextResponse.json({ ok: false, error: "Channel output not found" }, { status: 404 });
   }
@@ -27,22 +26,21 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
   if (owner !== actingEmail) {
     return NextResponse.json({ ok: false, error: "Only this request's owner can do that" }, { status: 403 });
   }
-  if (output.review_status !== "approved") {
-    return NextResponse.json({ ok: false, error: "Cannot send before approval" }, { status: 403 });
-  }
-  if (!output.reviewed_by) {
-    try {
-      await assertOk(db.from("channel_outputs").update({ reviewed_by: actingEmail }).eq("id", channelOutputId), "channel_outputs reviewed_by backfill");
-    } catch (err) {
-      // Attribution-only field — don't block a real send over it, just don't pretend it worked silently.
-      console.error(`channel_outputs reviewed_by backfill failed for ${channelOutputId}:`, err);
-    }
+  if (output.publish_status !== "scheduled") {
+    return NextResponse.json({ ok: false, error: "This isn't currently scheduled" }, { status: 409 });
   }
 
-  const result = await sendNewsletterNow(channelOutputId);
-
-  if (result.status === "failed") {
-    return NextResponse.json({ ok: false, error: result.error }, { status: 502 });
+  try {
+    await assertOk(
+      db
+        .from("channel_outputs")
+        .update({ publish_status: "queued", scheduled_for: null, updated_at: new Date().toISOString() })
+        .eq("id", channelOutputId),
+      "channel_outputs cancel-schedule update"
+    );
+  } catch (err) {
+    return NextResponse.json({ ok: false, error: err instanceof Error ? err.message : "Failed to cancel schedule" }, { status: 500 });
   }
-  return NextResponse.json({ ok: true, status: result.status });
+
+  return NextResponse.json({ ok: true });
 }

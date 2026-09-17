@@ -2,8 +2,10 @@ import Link from "next/link";
 import { supabaseService } from "@/lib/supabase/service";
 import { RequestForm } from "@/components/RequestForm";
 import { StatusBadge } from "@/components/StatusBadge";
+import { StatTile } from "@/components/StatTile";
 import { signOut } from "@/app/actions/auth";
 import { ThemeToggle } from "@/components/ThemeToggle";
+import { formatDate } from "@/lib/format";
 
 export const maxDuration = 300; // hosts the createContentRequest Server Action — see artifact/design.md
 export const dynamic = "force-dynamic"; // always-fresh dashboard state, never statically cached
@@ -51,6 +53,13 @@ export default async function Home() {
     queueCounts.set(row.publish_status, (queueCounts.get(row.publish_status) ?? 0) + 1);
   }
 
+  const NON_TERMINAL_STAGES = ["queued", "researching", "planning_drafting", "evaluating", "revising"];
+  const inProgressCount = NON_TERMINAL_STAGES.reduce((sum, s) => sum + (statusCounts.get(s) ?? 0), 0);
+  const readyForReviewCount = statusCounts.get("ready_for_review") ?? 0;
+  const failedRequestCount = statusCounts.get("failed") ?? 0;
+  const scheduledCount = queueCounts.get("scheduled") ?? 0;
+  const sentCount = queueCounts.get("sent") ?? 0;
+
   return (
     <main className="mx-auto flex w-full max-w-4xl flex-1 flex-col gap-10 px-6 py-12">
       <div className="flex items-center justify-between">
@@ -68,17 +77,8 @@ export default async function Home() {
         </div>
       </div>
 
-      <section>
-        <h2 className="mb-4 text-sm font-semibold text-muted">New content request</h2>
-        <RequestForm />
-      </section>
-
-      <section className="flex flex-col gap-6 border-t border-rule pt-6">
-        <div>
-          <h2 className="mb-2 text-xs font-semibold text-muted">cost</h2>
-          <p className="text-sm">
-            Total spend: <strong>${totalCost.toFixed(2)}</strong>
-          </p>
+      <section className="flex flex-col gap-3">
+        <StatTile label="Total spend" value={`$${totalCost.toFixed(2)}`}>
           {costByStage.size > 0 && (
             <ul className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted">
               {Array.from(costByStage.entries()).map(([stage, cost]) => (
@@ -88,36 +88,32 @@ export default async function Home() {
               ))}
             </ul>
           )}
+        </StatTile>
+        <div>
+          <h3 className="mb-2 text-xs font-semibold text-muted">requests</h3>
+          <div className="grid grid-cols-3 items-start gap-3">
+            <StatTile label="In progress" value={String(inProgressCount)} />
+            <StatTile label="Ready for review" value={String(readyForReviewCount)} />
+            <StatTile label="Failed" value={String(failedRequestCount)} />
+          </div>
         </div>
 
         <div>
-          <h2 className="mb-2 text-xs font-semibold text-muted">status</h2>
-          {statusCounts.size === 0 ? (
-            <p className="text-sm text-muted">No requests yet.</p>
-          ) : (
-            <div className="flex flex-wrap gap-2">
-              {Array.from(statusCounts.entries()).map(([stage, count]) => (
-                <StatusBadge key={stage} status={stage} label={`${count} ${stage}`} />
-              ))}
-            </div>
-          )}
+          <h3 className="mb-2 text-xs font-semibold text-muted">channels</h3>
+          <div className="grid grid-cols-2 items-start gap-3">
+            <StatTile label="Scheduled" value={String(scheduledCount)} />
+            <StatTile label="Sent" value={String(sentCount)} />
+          </div>
         </div>
 
-        <div>
-          <h2 className="mb-2 text-xs font-semibold text-muted">publishing queue</h2>
-          {queueCounts.size === 0 ? (
-            <p className="text-sm text-muted">Nothing queued, scheduled, or sent yet.</p>
-          ) : (
-            <div className="flex flex-wrap items-center gap-2">
-              {Array.from(queueCounts.entries()).map(([status, count]) => (
-                <StatusBadge key={status} status={status} label={`${count} ${status}`} />
-              ))}
-              <Link href="/queue" className="text-xs text-muted underline">
-                view queue
-              </Link>
-            </div>
-          )}
-        </div>
+        <Link href="/queue" className="self-start text-xs text-muted underline">
+          View publishing queue
+        </Link>
+      </section>
+
+      <section>
+        <h2 className="mb-4 border-t border-rule pt-6 text-sm font-semibold text-muted">New content request</h2>
+        <RequestForm />
       </section>
 
       <section>
@@ -125,17 +121,32 @@ export default async function Home() {
         {!requests || requests.length === 0 ? (
           <p className="text-sm text-muted">No requests yet.</p>
         ) : (
-          <ul className="flex flex-col gap-2">
-            {requests.map((r) => (
-              <li key={r.id} className="flex items-center justify-between gap-4 border-b border-rule py-2 text-sm">
-                <Link href={`/requests/${r.id}`} className="truncate underline">
-                  {r.raw_idea}
-                </Link>
-                <span className="shrink-0 text-xs text-muted">{r.target_audience}</span>
-                <StatusBadge status={r.stage} />
-              </li>
-            ))}
-          </ul>
+          <table className="w-full text-left text-sm">
+            <thead>
+              <tr className="border-b border-rule text-xs text-muted">
+                <th className="py-2 pr-4 font-medium">Idea</th>
+                <th className="py-2 pr-4 font-medium">Audience</th>
+                <th className="py-2 pr-4 font-medium">Stage</th>
+                <th className="py-2 font-medium">Created</th>
+              </tr>
+            </thead>
+            <tbody>
+              {requests.map((r) => (
+                <tr key={r.id} className="border-b border-rule">
+                  <td className="py-2 pr-4">
+                    <Link href={`/requests/${r.id}`} className="underline">
+                      {r.raw_idea}
+                    </Link>
+                  </td>
+                  <td className="py-2 pr-4 text-muted">{r.target_audience}</td>
+                  <td className="py-2 pr-4">
+                    <StatusBadge status={r.stage} />
+                  </td>
+                  <td className="py-2 text-xs text-muted">{formatDate(r.created_at)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         )}
       </section>
     </main>

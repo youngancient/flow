@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { StatusBadge } from "./StatusBadge";
+import { formatDateTime } from "@/lib/format";
 
 export type QueueRow = {
   id: string;
@@ -22,29 +23,29 @@ export function QueueTable({ rows }: { rows: QueueRow[] }) {
     <table className="w-full text-left text-sm">
       <thead>
         <tr className="border-b border-rule text-xs text-muted">
-          <th className="py-2">Request</th>
-          <th className="py-2">Channel</th>
-          <th className="py-2">Status</th>
+          <th className="py-2 pr-4">Request</th>
+          <th className="py-2 pr-4">Channel</th>
+          <th className="py-2 pr-4">Status</th>
           <th className="py-2">When</th>
         </tr>
       </thead>
       <tbody>
         {rows.map((row) => (
           <tr key={row.id} className="border-b border-rule">
-            <td className="py-2">
+            <td className="py-2 pr-4">
               <Link href={`/requests/${row.request_id}`} className="underline">
                 {row.subject ?? row.raw_idea.slice(0, 60)}
               </Link>
             </td>
-            <td className="py-2 capitalize">{row.channel}</td>
-            <td className="py-2">
+            <td className="py-2 pr-4 capitalize">{row.channel}</td>
+            <td className="py-2 pr-4">
               <StatusBadge status={row.publish_status} />
             </td>
             <td className="py-2 text-xs text-muted">
-              {row.sent_at
-                ? `sent ${new Date(row.sent_at).toLocaleString()}`
-                : row.scheduled_for
-                  ? `scheduled for ${new Date(row.scheduled_for).toLocaleString()}`
+              {row.publish_status === "sent" && row.sent_at
+                ? `sent ${formatDateTime(row.sent_at)}`
+                : row.publish_status === "scheduled" && row.scheduled_for
+                  ? `scheduled for ${formatDateTime(row.scheduled_for)}`
                   : "—"}
               {row.last_error && <span className="text-flag">, {row.last_error}</span>}
             </td>

@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import { Spinner } from "./Spinner";
 
 type LogEntry = {
   stage: string;
@@ -92,7 +93,8 @@ export function PipelineProgress({
   return (
     <div className="flex flex-col gap-4 border border-rule p-5">
       <div className="flex items-center justify-between">
-        <span className="text-xs font-semibold text-muted">
+        <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-muted">
+          {!failed && <Spinner />}
           {failed ? "Failed" : "Working"}
         </span>
         <span className="text-xs text-muted">{elapsed}s elapsed</span>

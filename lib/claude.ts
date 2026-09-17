@@ -5,11 +5,13 @@ import {
   buildEvaluationSchema,
   buildRevisionSchema,
   channelAdaptationSchema,
+  singleChannelSchemas,
   type RubricCriteria,
 } from "./schemas";
 import {
   SEO_BEST_PRACTICES,
   CHANNEL_FORMATTING_RULES,
+  CHANNEL_RULES_BY_CHANNEL,
   CONTENT_EVALUATION_RUBRIC,
   HOUSE_STYLE,
   DRAFT_OPTION_LABELS,
@@ -107,7 +109,7 @@ async function callTool({
     // in the schema (e.g. adaptToChannels truncating after "linkedin," so
     // "x" and "newsletter" look absent rather than truncated) — a
     // misleading error for what's actually a token-budget problem.
-    throw new Error(`Claude's ${toolName} response was truncated at maxTokens=${maxTokens} — raise it.`);
+    throw new Error(`Claude's ${toolName} response was truncated at maxTokens=${maxTokens}. Raise it.`);
   }
 
   return {
@@ -490,6 +492,102 @@ ${params.bodyMarkdown}
     linkedin: { body: cleanChannelText(parsed.linkedin.body) },
     x: { body: cleanChannelText(parsed.x.body), hashtags: parsed.x.hashtags },
     newsletter: { subject: cleanChannelText(parsed.newsletter.subject), body: cleanChannelText(parsed.newsletter.body) },
+    inputTokens: result.inputTokens,
+    outputTokens: result.outputTokens,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Single-channel regenerate — used by regenerateSingleChannelOutput
+// (lib/pipeline.ts), never by the initial 3-channel generation
+// (generateChannelOutputs, which still uses adaptToChannels above).
+//
+// adaptToChannels' schema requires all three of {linkedin, x, newsletter} in
+// one tool call. Anthropic's tool use isn't strictly schema-enforced, so
+// when a regenerate call carries feedback scoped to one channel, the model
+// can (and in practice did) omit the other two required objects entirely —
+// a normal, complete stop, not a max_tokens truncation, so callTool's
+// stop_reason check never catches it; it surfaces instead as a raw Zod
+// "Required" error on whichever fields were missing. Asking for only the
+// one channel that's actually being regenerated removes the failure mode
+// by construction: there's nothing for the model to "helpfully" omit.
+// ---------------------------------------------------------------------------
+
+export type ChannelName = "linkedin" | "x" | "newsletter";
+
+const SINGLE_CHANNEL_TOOL_SCHEMA: Record<ChannelName, Record<string, unknown>> = {
+  linkedin: {
+    type: "object",
+    properties: { body: { type: "string" } },
+    required: ["body"],
+  },
+  x: {
+    type: "object",
+    properties: { body: { type: "string" }, hashtags: { type: "array", items: { type: "string" } } },
+    required: ["body"],
+  },
+  newsletter: {
+    type: "object",
+    properties: { subject: { type: "string" }, body: { type: "string" } },
+    required: ["subject", "body"],
+  },
+};
+
+export type SingleChannelResult = {
+  body: string;
+  hashtags?: string[];
+  subject?: string;
+  inputTokens: number;
+  outputTokens: number;
+};
+
+export async function adaptSingleChannel(params: {
+  channel: ChannelName;
+  title: string;
+  bodyMarkdown: string;
+  correctionNote?: string;
+}): Promise<SingleChannelResult> {
+  const { channel } = params;
+
+  const userPrompt = `
+Adapt this approved article into a ${channel} post, following the platform rules exactly:
+
+${CHANNEL_RULES_BY_CHANNEL[channel]}
+
+${params.correctionNote ? `IMPORTANT CORRECTION FROM A PREVIOUS ATTEMPT: ${params.correctionNote}\n` : ""}
+Article title: ${params.title}
+Article body:
+${params.bodyMarkdown}
+`.trim();
+
+  const result = await callTool({
+    model: MODEL_CHANNEL_ADAPT,
+    system:
+      "You are a platform-formatting specialist. Reformat the given article for one channel; do not add new claims beyond what's in the article.",
+    userPrompt,
+    maxTokens: 3000,
+    toolName: `submit_${channel}_adaptation`,
+    toolDescription: `Submit the ${channel} adaptation only.`,
+    inputSchema: SINGLE_CHANNEL_TOOL_SCHEMA[channel],
+  });
+
+  if (channel === "linkedin") {
+    const parsed = singleChannelSchemas.linkedin.parse(result.data);
+    return { body: cleanChannelText(parsed.body), inputTokens: result.inputTokens, outputTokens: result.outputTokens };
+  }
+  if (channel === "x") {
+    const parsed = singleChannelSchemas.x.parse(result.data);
+    return {
+      body: cleanChannelText(parsed.body),
+      hashtags: parsed.hashtags,
+      inputTokens: result.inputTokens,
+      outputTokens: result.outputTokens,
+    };
+  }
+  const parsed = singleChannelSchemas.newsletter.parse(result.data);
+  return {
+    body: cleanChannelText(parsed.body),
+    subject: cleanChannelText(parsed.subject),
     inputTokens: result.inputTokens,
     outputTokens: result.outputTokens,
   };
