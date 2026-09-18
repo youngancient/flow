@@ -35,3 +35,11 @@ export function formatDateTime(iso: string): string {
   const time = d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
   return `${formatDate(iso)}, ${time}`;
 }
+
+/** e.g. "45s", "1m02s" — for a live elapsed-time counter. */
+export function formatElapsedSeconds(totalSeconds: number): string {
+  if (totalSeconds < 60) return `${totalSeconds}s`;
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}m${String(seconds).padStart(2, "0")}s`;
+}

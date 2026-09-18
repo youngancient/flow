@@ -27,7 +27,7 @@ export async function POST(request: NextRequest) {
     submissionKey: body.submissionKey ?? randomUUID(),
     rawIdea: body.rawIdea,
     targetAudience: body.targetAudience,
-    sourceUrl: body.sourceUrl ?? "",
+    sourceUrls: Array.isArray(body.sourceUrls) ? body.sourceUrls : [],
     supportingNotes: body.supportingNotes ?? "",
   });
 
@@ -54,7 +54,7 @@ export async function POST(request: NextRequest) {
         submission_key: parsed.data.submissionKey,
         raw_idea: parsed.data.rawIdea,
         target_audience: parsed.data.targetAudience,
-        source_url: parsed.data.sourceUrl || null,
+        source_urls: parsed.data.sourceUrls,
         supporting_notes: parsed.data.supportingNotes || null,
       })
       .select("id")

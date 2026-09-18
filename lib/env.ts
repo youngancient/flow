@@ -3,12 +3,14 @@ import "server-only";
 /**
  * Core env vars the app cannot function without. Deliberately excludes
  * vars that are optional by design and already handled gracefully
- * elsewhere: DISCORD_BOT_TOKEN/DISCORD_CHANNEL_ID (postPipelineError no-ops
- * if either is unset), CRON_SECRET (the optional run-due route just 401s without it),
- * TESTING_API_TOKEN (falls back to requiring a real session), and anything
- * with a sane code default (BREVO_SENDER_NAME, APP_URL). Making those
- * hard-required here would contradict their own documented "best-effort,
- * never blocks" design (artifact/design.md, "Notifications").
+ * elsewhere: DISCORD_BOT_TOKEN/DISCORD_CHANNEL_ID/DISCORD_API_BASE_URL
+ * (postPipelineError no-ops if any is unset), CRON_SECRET (the optional
+ * run-due route just 401s without it), TESTING_API_TOKEN (falls back to
+ * requiring a real session), and BREVO_SENDER_NAME (has a sane code
+ * default). Making those hard-required here would contradict their own
+ * documented "best-effort, never blocks" design (artifact/design.md,
+ * "Notifications"). APP_URL and VOYAGE_EMBEDDINGS_URL used to have code
+ * defaults too but no longer do — they're listed below instead.
  */
 const REQUIRED_ENV_VARS = [
   "NEXT_PUBLIC_SUPABASE_URL",
@@ -17,9 +19,11 @@ const REQUIRED_ENV_VARS = [
   "ANTHROPIC_API_KEY",
   "FIRECRAWL_API_KEY",
   "VOYAGE_API_KEY",
+  "VOYAGE_EMBEDDINGS_URL",
   "BREVO_API_KEY",
   "BREVO_SENDER_EMAIL",
   "BREVO_LIST_ID",
+  "APP_URL",
 ] as const;
 
 /**

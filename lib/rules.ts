@@ -133,6 +133,8 @@ Plain text only. No markdown syntax — no **bold**, no # headings, no markdown 
 `.trim();
 
 export const MAX_SOURCES = 5;
+/** Cap on user-supplied source URLs per request (RequestForm, contentRequestInputSchema). */
+export const MAX_SOURCE_URLS = 3;
 export const MIN_SIMILARITY = 0.35;
 export const MAX_REVISION_ROUNDS = 2;
 export const MAX_HUMAN_REVISION_ROUNDS = 3;

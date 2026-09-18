@@ -1,4 +1,5 @@
 import "server-only";
+import { ZodError } from "zod";
 import { supabaseService } from "./supabase/service";
 import { assertOk } from "./supabase/assert";
 import { scrapeUrl, searchWeb, type FetchedSource } from "./firecrawl";
@@ -49,13 +50,38 @@ async function setStage(requestId: string, stage: Stage) {
   await assertOk(supabaseService().from("content_requests").update({ stage }).eq("id", requestId), "content_requests stage update");
 }
 
+/**
+ * A raw ZodError's own `.message` is a pretty-printed JSON array of every
+ * issue — accurate, but unreadable dumped straight into pipeline_error/a
+ * Discord message. Claude's structured-output calls throw this whenever the
+ * model's response doesn't match the expected schema (missing fields, a bad
+ * enum value, etc.) — collapse it to one plain-English line instead, still
+ * naming the count and the first failing field for anyone debugging it.
+ */
+function formatPipelineError(error: unknown): string {
+  if (error instanceof ZodError) {
+    const [first, ...rest] = error.issues;
+    const where = first.path.join(".") || "(root)";
+    const more = rest.length > 0 ? ` (+${rest.length} more issue${rest.length > 1 ? "s" : ""})` : "";
+    return `Claude returned a response that didn't match the expected format at "${where}": ${first.message}${more}. This is usually a one-off malformed model output — retrying often resolves it.`;
+  }
+  return error instanceof Error ? error.message : String(error);
+}
+
 async function setFailed(requestId: string, stage: string, error: unknown) {
-  const message = error instanceof Error ? error.message : String(error);
-  await appendLog(requestId, { stage, ok: false, error: message });
-  await assertOk(
-    supabaseService().from("content_requests").update({ stage: "failed", pipeline_error: message }).eq("id", requestId),
-    "content_requests failed-stage update"
-  );
+  const message = formatPipelineError(error);
+  try {
+    await appendLog(requestId, { stage, ok: false, error: message });
+    await assertOk(
+      supabaseService().from("content_requests").update({ stage: "failed", pipeline_error: message }).eq("id", requestId),
+      "content_requests failed-stage update"
+    );
+  } catch (writeErr) {
+    // If recording the failure itself fails (e.g. Supabase is down), that
+    // must never swallow the Discord alert below — this is exactly the
+    // moment the team most needs to hear about it.
+    console.error(`setFailed: failed to record failure for request ${requestId} (stage ${stage}):`, writeErr);
+  }
   postPipelineError({ requestId, stage, error: message });
 }
 
@@ -88,15 +114,19 @@ export async function runPipeline(requestId: string): Promise<void> {
     if (request.stage === "ready_for_review") return; // nothing to do
 
     // A resumed run (retry) may be starting from a row that still has a
-    // stale pipeline_error from the attempt that failed. The Server Action
-    // retry path (app/requests/[id]/actions.ts) already clears this
-    // synchronously before redirecting, so the UI never flashes it — but
-    // the curl-testable retry Route Handler calls runPipeline directly with
-    // no pre-clear, so without this the error text keeps showing on the
-    // review page even after a resumed run reaches ready_for_review.
-    if (request.pipeline_error) {
-      await assertOk(db.from("content_requests").update({ pipeline_error: null }).eq("id", requestId), "content_requests pipeline_error clear");
-    }
+    // stale pipeline_error from the attempt that failed, and always needs
+    // pipeline_started_at reset — otherwise PipelineProgress's elapsed
+    // timer anchors to the original submission time, not this attempt (can
+    // read as a wildly wrong "21m elapsed" on a retry of an old request).
+    // The Server Action retry path (app/requests/[id]/actions.ts) already
+    // resets both synchronously before redirecting, so the UI never
+    // flashes the stale values — but the curl-testable retry Route Handler
+    // calls runPipeline directly with no pre-reset, so this still needs to
+    // happen here too.
+    await assertOk(
+      db.from("content_requests").update({ pipeline_error: null, pipeline_started_at: new Date().toISOString() }).eq("id", requestId),
+      "content_requests retry reset"
+    );
 
     // ---- Stage 1: Research ------------------------------------------------
     await setStage(requestId, "researching");
@@ -104,7 +134,7 @@ export async function runPipeline(requestId: string): Promise<void> {
 
     if (!existingSources || existingSources.length === 0) {
       try {
-        await runResearch(requestId, request.source_url, request.raw_idea);
+        await runResearch(requestId, request.source_urls, request.raw_idea);
         await setSucceeded(requestId, "research");
       } catch (err) {
         await setFailed(requestId, "research", err);
@@ -142,7 +172,7 @@ export async function runPipeline(requestId: string): Promise<void> {
     // ---- Stage 4 + 5: Evaluate + bounded auto-revision loop -----------------
     await setStage(requestId, "evaluating");
     try {
-      await runEvaluationAndRevisionLoop(requestId);
+      await runEvaluationAndRevisionLoop(requestId, request.raw_idea, request.target_audience);
       await setSucceeded(requestId, "evaluation_and_revision");
     } catch (err) {
       await setFailed(requestId, "evaluation_and_revision", err);
@@ -158,12 +188,15 @@ export async function runPipeline(requestId: string): Promise<void> {
   }
 }
 
-async function runResearch(requestId: string, sourceUrl: string | null, rawIdea: string): Promise<void> {
+async function runResearch(requestId: string, sourceUrls: string[], rawIdea: string): Promise<void> {
   const db = supabaseService();
   const fetched: FetchedSource[] = [];
   const rows: Array<Record<string, unknown>> = [];
 
-  if (sourceUrl) {
+  // Scraped independently — one bad/unreachable URL doesn't stop the others
+  // from being tried. Falls back to search only if every URL failed (or
+  // none were given), same as the old single-URL behavior generalized to N.
+  for (const sourceUrl of sourceUrls) {
     try {
       const scraped = await scrapeUrl(sourceUrl);
       fetched.push(scraped);
@@ -189,8 +222,8 @@ async function runResearch(requestId: string, sourceUrl: string | null, rawIdea:
   }
 
   if (fetched.length === 0) {
-    // No URL given, or the scrape failed — fall back to idea-based search
-    // rather than hard-failing the request.
+    // No URLs given, or every scrape failed — fall back to idea-based
+    // search rather than hard-failing the request.
     try {
       const results = await searchWeb(rawIdea);
       for (const r of results) {
@@ -356,7 +389,7 @@ async function runPlanAndGenerate(
   });
 }
 
-async function runEvaluationAndRevisionLoop(requestId: string): Promise<void> {
+async function runEvaluationAndRevisionLoop(requestId: string, rawIdea: string, targetAudience: string): Promise<void> {
   const db = supabaseService();
 
   async function latestDraftsFor(labels: readonly string[]) {
@@ -393,7 +426,7 @@ async function runEvaluationAndRevisionLoop(requestId: string): Promise<void> {
     }
 
     if (toEvaluate.length > 0) {
-      const evalResult = await evaluateDrafts({ drafts: toEvaluate });
+      const evalResult = await evaluateDrafts({ rawIdea, targetAudience, drafts: toEvaluate });
 
       for (const r of evalResult.results) {
         const draft = draftsByLabel.get(r.optionLabel);
@@ -610,6 +643,7 @@ export async function generateChannelOutputs(requestId: string, draftId: string)
     // stage failure, and selectDraft's caller can let the reviewer retry.
     const message = err instanceof Error ? err.message : String(err);
     await appendLog(requestId, { stage: "channel_adaptation", ok: false, error: message });
+    postPipelineError({ requestId, stage: "channel_adaptation", error: message });
     throw err;
   }
 }
@@ -684,6 +718,7 @@ export async function regenerateSingleChannelOutput(channelOutputId: string, fee
     // only as a toast a reviewer could miss.
     const message = err instanceof Error ? err.message : String(err);
     await appendLog(output.request_id, { stage: "channel_regenerate", channel, ok: false, error: message });
+    postPipelineError({ requestId: output.request_id, stage: "channel_regenerate", error: message });
     throw err;
   }
 }

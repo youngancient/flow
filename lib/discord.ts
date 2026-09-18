@@ -1,7 +1,5 @@
 import "server-only";
 
-const DISCORD_API = "https://discord.com/api/v10";
-
 /**
  * Fire-and-forget post to the team's Discord error channel via the bot API
  * (not an incoming webhook) — the bot must already be invited to the
@@ -16,11 +14,18 @@ export function postPipelineError(params: {
 }): void {
   const botToken = process.env.DISCORD_BOT_TOKEN;
   const channelId = process.env.DISCORD_CHANNEL_ID;
-  if (!botToken || !channelId) return;
+  const discordApiBaseUrl = process.env.DISCORD_API_BASE_URL;
+  if (!botToken || !channelId || !discordApiBaseUrl) return;
 
-  const appUrl = process.env.APP_URL ?? "http://localhost:3000";
+  const appUrl = process.env.APP_URL;
+  if (!appUrl) {
+    // Never throw out of a fire-and-forget alert path — a misconfigured
+    // env var must not be able to suppress the alert it's trying to send.
+    console.error("postPipelineError: Missing APP_URL env var, skipping Discord alert");
+    return;
+  }
 
-  fetch(`${DISCORD_API}/channels/${channelId}/messages`, {
+  fetch(`${discordApiBaseUrl}/channels/${channelId}/messages`, {
     method: "POST",
     headers: {
       Authorization: `Bot ${botToken}`,

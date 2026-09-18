@@ -10,7 +10,10 @@ import { EvaluationRow } from "@/components/EvaluationPanel";
 import { ChannelOutputCard } from "@/components/ChannelOutputCard";
 import { RetryButton } from "@/components/RetryButton";
 import { PipelineProgress } from "@/components/PipelineProgress";
+import { SupportingNotes } from "@/components/SupportingNotes";
 import { DRAFT_OPTION_LABELS } from "@/lib/rules";
+import { computePublishRollup, hasUnresolvedChannelGenerationFailure } from "@/lib/publishStatus";
+import { formatDateTime } from "@/lib/format";
 
 const TERMINAL_STAGES = new Set(["ready_for_review", "failed"]);
 
@@ -79,6 +82,12 @@ export default async function RequestPage({ params }: { params: Promise<{ id: st
   const generatingDraft = (draftsRes.data ?? []).find((d) => d.id === channelOutputs[0]?.draft_id);
   const channelOrder = ["linkedin", "x", "newsletter"];
   const inProgress = !TERMINAL_STAGES.has(request.stage);
+  const publishRollup =
+    request.stage === "ready_for_review"
+      ? hasUnresolvedChannelGenerationFailure(request.pipeline_log, channelOutputs.length > 0)
+        ? "generation_failed"
+        : computePublishRollup(channelOutputs.map((c) => c.publish_status))
+      : null;
 
   return (
     <main className="mx-auto flex w-full max-w-5xl flex-1 flex-col gap-8 px-6 py-12">
@@ -86,18 +95,18 @@ export default async function RequestPage({ params }: { params: Promise<{ id: st
         <Link href="/" className="text-sm text-muted underline">
           ← All requests
         </Link>
-        <div className="flex items-center gap-2">
-          <StatusBadge status={request.stage} />
-          {request.stage === "failed" && isOwner && <RetryButton requestId={id} />}
+        <div className="flex flex-col items-end gap-1">
+          <div className="flex items-center gap-2">
+            <StatusBadge status={publishRollup ?? request.stage} />
+            {request.stage === "failed" && isOwner && <RetryButton requestId={id} />}
+          </div>
+          <span className="text-xs text-muted">Created {formatDateTime(request.created_at)}</span>
         </div>
       </div>
 
       <div>
         <h1 className="font-serif text-2xl">{request.raw_idea}</h1>
-        <p className="text-sm text-muted">
-          for: {request.target_audience}
-          {request.source_url ? `, source: ${request.source_url}` : ""}
-        </p>
+        <p className="text-sm text-muted">for: {request.target_audience}</p>
         <p className="text-xs text-muted">Owned by {isOwner ? "You" : request.requested_by}{!isOwner && " (read only)"}</p>
         {request.low_grounding && (
           <p className="mt-1 text-sm text-pending">
@@ -109,6 +118,7 @@ export default async function RequestPage({ params }: { params: Promise<{ id: st
       {inProgress ? (
         <PipelineProgress
           requestId={id}
+          startedAt={request.pipeline_started_at}
           initialStage={request.stage}
           initialLog={request.pipeline_log ?? []}
           initialError={request.pipeline_error}
@@ -123,6 +133,13 @@ export default async function RequestPage({ params }: { params: Promise<{ id: st
             <h2 className="mb-3 border-t border-rule pt-4 text-xs font-semibold text-muted">sources</h2>
             <SourceList sources={sources} />
           </section>
+
+          {request.supporting_notes && (
+            <section>
+              <h2 className="mb-3 border-t border-rule pt-4 text-xs font-semibold text-muted">supporting notes</h2>
+              <SupportingNotes notes={request.supporting_notes} />
+            </section>
+          )}
 
           {request.plan && (
             <section>

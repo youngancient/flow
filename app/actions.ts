@@ -16,7 +16,10 @@ export async function createContentRequest(formData: FormData): Promise<ActionRe
     submissionKey: formData.get("submissionKey"),
     rawIdea: formData.get("rawIdea"),
     targetAudience: formData.get("targetAudience"),
-    sourceUrl: formData.get("sourceUrl") ?? "",
+    // Multiple inputs share name="sourceUrls" (see RequestForm) — blank
+    // rows come through as empty strings, so they're filtered before
+    // validation rather than tripping the .url() check on each one.
+    sourceUrls: formData.getAll("sourceUrls").map(String).map((s) => s.trim()).filter(Boolean),
     supportingNotes: formData.get("supportingNotes") ?? "",
   });
 
@@ -46,7 +49,7 @@ export async function createContentRequest(formData: FormData): Promise<ActionRe
         submission_key: parsed.data.submissionKey,
         raw_idea: parsed.data.rawIdea,
         target_audience: parsed.data.targetAudience,
-        source_url: parsed.data.sourceUrl || null,
+        source_urls: parsed.data.sourceUrls,
         supporting_notes: parsed.data.supportingNotes || null,
       })
       .select("id")

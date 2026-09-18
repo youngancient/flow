@@ -1,7 +1,6 @@
 import "server-only";
 
 const VOYAGE_MODEL = "voyage-3.5-lite";
-const VOYAGE_URL = "https://api.voyageai.com/v1/embeddings";
 const MAX_CHUNK_CHARS = 1600;
 const MIN_CHUNK_CHARS = 200;
 
@@ -43,8 +42,10 @@ async function voyageEmbed(
 ): Promise<number[][]> {
   const apiKey = process.env.VOYAGE_API_KEY;
   if (!apiKey) throw new Error("Missing VOYAGE_API_KEY env var");
+  const apiUrl = process.env.VOYAGE_EMBEDDINGS_URL;
+  if (!apiUrl) throw new Error("Missing VOYAGE_EMBEDDINGS_URL env var");
 
-  const response = await fetch(VOYAGE_URL, {
+  const response = await fetch(apiUrl, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${apiKey}`,

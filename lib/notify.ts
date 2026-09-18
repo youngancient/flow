@@ -2,8 +2,6 @@ import "server-only";
 import { brevo, brevoSender } from "./brevo";
 import { supabaseService } from "./supabase/service";
 
-const APP_URL = process.env.APP_URL ?? "http://localhost:3000";
-
 /**
  * Best-effort action-confirmation emails (artifact/design.md,
  * "Notifications"). A notification failure is logged but never rolls back
@@ -12,6 +10,8 @@ const APP_URL = process.env.APP_URL ?? "http://localhost:3000";
 
 export async function notifyReadyForReview(requestId: string): Promise<void> {
   try {
+    const appUrl = process.env.APP_URL;
+    if (!appUrl) throw new Error("Missing APP_URL env var");
     const db = supabaseService();
     const { data: request } = await db
       .from("content_requests")
@@ -24,7 +24,7 @@ export async function notifyReadyForReview(requestId: string): Promise<void> {
       sender: brevoSender(),
       to: [{ email: request.requested_by }],
       subject: `Ready to review: ${request.raw_idea.slice(0, 60)}`,
-      htmlContent: `<p>Your content request is ready to review.</p><p><a href="${APP_URL}/requests/${requestId}">${APP_URL}/requests/${requestId}</a></p>`,
+      htmlContent: `<p>Your content request is ready to review.</p><p><a href="${appUrl}/requests/${requestId}">${appUrl}/requests/${requestId}</a></p>`,
     });
   } catch (err) {
     console.error("notifyReadyForReview failed:", err);
@@ -33,6 +33,8 @@ export async function notifyReadyForReview(requestId: string): Promise<void> {
 
 export async function notifyNewsletterSent(channelOutputId: string): Promise<void> {
   try {
+    const appUrl = process.env.APP_URL;
+    if (!appUrl) throw new Error("Missing APP_URL env var");
     const db = supabaseService();
     const { data: output } = await db
       .from("channel_outputs")
@@ -45,7 +47,7 @@ export async function notifyNewsletterSent(channelOutputId: string): Promise<voi
       sender: brevoSender(),
       to: [{ email: output.reviewed_by }],
       subject: `Sent: ${output.subject ?? "Newsletter"}`,
-      htmlContent: `<p>The newsletter "${output.subject ?? ""}" was sent.</p><p><a href="${APP_URL}/requests/${output.request_id}">View request</a></p>`,
+      htmlContent: `<p>The newsletter "${output.subject ?? ""}" was sent.</p><p><a href="${appUrl}/requests/${output.request_id}">View request</a></p>`,
     });
   } catch (err) {
     console.error("notifyNewsletterSent failed:", err);

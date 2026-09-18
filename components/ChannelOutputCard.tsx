@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { StatusBadge } from "./StatusBadge";
 import { Modal } from "./Modal";
@@ -46,6 +47,7 @@ const CHANNEL_LABEL: Record<ChannelOutput["channel"], string> = {
 };
 
 export function ChannelOutputCard({ output, isOwner }: { output: ChannelOutput; isOwner: boolean }) {
+  const router = useRouter();
   const [previewOpen, setPreviewOpen] = useState(false);
   const [body, setBody] = useState(output.body);
   const [subject, setSubject] = useState(output.subject ?? "");
@@ -146,8 +148,12 @@ export function ChannelOutputCard({ output, isOwner }: { output: ChannelOutput; 
     await withPending("send", async () => {
       const res = await fetch(`/api/publish/newsletter/${output.id}/send`, { method: "POST" });
       const json = await res.json();
-      if (!json.ok) toast.error(json.error ?? "Send failed");
-      else toast.success("Newsletter sent");
+      if (!json.ok) {
+        toast.error(json.error ?? "Send failed");
+      } else {
+        toast.success("Newsletter sent");
+        router.refresh();
+      }
     });
   }
 
@@ -160,11 +166,13 @@ export function ChannelOutputCard({ output, isOwner }: { output: ChannelOutput; 
         body: JSON.stringify({ scheduledFor: new Date(scheduleAt).toISOString() }),
       });
       const json = await res.json();
-      if (!json.ok) toast.error(json.error ?? "Schedule failed");
-      else {
+      if (!json.ok) {
+        toast.error(json.error ?? "Schedule failed");
+      } else {
         toast.success("Scheduled");
         setRescheduling(false);
         setScheduleAt("");
+        router.refresh();
       }
     });
   }
@@ -173,11 +181,13 @@ export function ChannelOutputCard({ output, isOwner }: { output: ChannelOutput; 
     await withPending("cancelSchedule", async () => {
       const res = await fetch(`/api/publish/newsletter/${output.id}/cancel`, { method: "POST" });
       const json = await res.json();
-      if (!json.ok) toast.error(json.error ?? "Failed to cancel schedule");
-      else {
+      if (!json.ok) {
+        toast.error(json.error ?? "Failed to cancel schedule");
+      } else {
         toast.success("Schedule canceled");
         setRescheduling(false);
         setScheduleAt("");
+        router.refresh();
       }
     });
   }
@@ -281,7 +291,13 @@ export function ChannelOutputCard({ output, isOwner }: { output: ChannelOutput; 
               </div>
               {rescheduling && (
                 <div className="flex flex-wrap items-center gap-2">
-                  <input type="datetime-local" value={scheduleAt} onChange={(e) => setScheduleAt(e.target.value)} className="border border-rule px-2 py-1 text-xs" />
+                  <input
+                    type="datetime-local"
+                    value={scheduleAt}
+                    onChange={(e) => setScheduleAt(e.target.value)}
+                    onClick={(e) => e.currentTarget.showPicker?.()}
+                    className="cursor-pointer border border-rule px-2 py-1 text-xs"
+                  />
                   <button
                     onClick={output.channel === "newsletter" ? handleScheduleNewsletter : handleScheduleSocial}
                     disabled={pending || !scheduleAt}
@@ -294,48 +310,43 @@ export function ChannelOutputCard({ output, isOwner }: { output: ChannelOutput; 
               )}
             </>
           ) : (
-            <div className="flex flex-wrap items-center gap-2">
+            <div className="flex flex-col items-start gap-2">
               {output.channel === "newsletter" ? (
-                <>
-                  <button
-                    onClick={handleSendNewsletterNow}
-                    disabled={pending}
-                    className="inline-flex cursor-pointer items-center gap-1.5 border border-ink px-3 py-1 text-xs disabled:cursor-not-allowed"
-                  >
-                    {pendingAction === "send" && <Spinner />}
-                    {pendingAction === "send" ? "Sending…" : "Send now"}
-                  </button>
-                  <input type="datetime-local" value={scheduleAt} onChange={(e) => setScheduleAt(e.target.value)} className="border border-rule px-2 py-1 text-xs" />
-                  <button
-                    onClick={handleScheduleNewsletter}
-                    disabled={pending || !scheduleAt}
-                    className="inline-flex cursor-pointer items-center gap-1.5 border border-rule px-3 py-1 text-xs disabled:cursor-not-allowed"
-                  >
-                    {pendingAction === "schedule" && <Spinner />}
-                    {pendingAction === "schedule" ? "Scheduling…" : "Schedule"}
-                  </button>
-                </>
+                <button
+                  onClick={handleSendNewsletterNow}
+                  disabled={pending}
+                  className="inline-flex cursor-pointer items-center gap-1.5 border border-ink px-3 py-1 text-xs disabled:cursor-not-allowed"
+                >
+                  {pendingAction === "send" && <Spinner />}
+                  {pendingAction === "send" ? "Sending…" : "Send now"}
+                </button>
               ) : (
-                <>
-                  <button
-                    onClick={handleMarkPosted}
-                    disabled={pending}
-                    className="inline-flex cursor-pointer items-center gap-1.5 border border-ink px-3 py-1 text-xs disabled:cursor-not-allowed"
-                  >
-                    {pendingAction === "markPosted" && <Spinner />}
-                    {pendingAction === "markPosted" ? "Marking…" : "Mark posted"}
-                  </button>
-                  <input type="datetime-local" value={scheduleAt} onChange={(e) => setScheduleAt(e.target.value)} className="border border-rule px-2 py-1 text-xs" />
-                  <button
-                    onClick={handleScheduleSocial}
-                    disabled={pending || !scheduleAt}
-                    className="inline-flex cursor-pointer items-center gap-1.5 border border-rule px-3 py-1 text-xs disabled:cursor-not-allowed"
-                  >
-                    {pendingAction === "schedule" && <Spinner />}
-                    {pendingAction === "schedule" ? "Scheduling…" : "Schedule"}
-                  </button>
-                </>
+                <button
+                  onClick={handleMarkPosted}
+                  disabled={pending}
+                  className="inline-flex cursor-pointer items-center gap-1.5 border border-ink px-3 py-1 text-xs disabled:cursor-not-allowed"
+                >
+                  {pendingAction === "markPosted" && <Spinner />}
+                  {pendingAction === "markPosted" ? "Marking…" : "Mark posted"}
+                </button>
               )}
+              <div className="flex flex-wrap items-center gap-2">
+                <input
+                  type="datetime-local"
+                  value={scheduleAt}
+                  onChange={(e) => setScheduleAt(e.target.value)}
+                  onClick={(e) => e.currentTarget.showPicker?.()}
+                  className="cursor-pointer border border-rule px-2 py-1 text-xs"
+                />
+                <button
+                  onClick={output.channel === "newsletter" ? handleScheduleNewsletter : handleScheduleSocial}
+                  disabled={pending || !scheduleAt}
+                  className="inline-flex cursor-pointer items-center gap-1.5 border border-rule px-3 py-1 text-xs disabled:cursor-not-allowed"
+                >
+                  {pendingAction === "schedule" && <Spinner />}
+                  {pendingAction === "schedule" ? "Scheduling…" : "Schedule"}
+                </button>
+              </div>
               <button
                 onClick={handleUnapprove}
                 disabled={pending}

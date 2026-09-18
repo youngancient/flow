@@ -31,6 +31,19 @@ export function stripLeakedCitationIds(text: string): string {
 }
 
 /**
+ * Strips a stray empty inline-citation parenthetical, e.g. "...costs ()."
+ * — the same leaked-citation habit stripLeakedCitationIds targets (the
+ * model trying to cite inline despite being told to cite only via
+ * source_chunk_ids), just missing the bracketed ID rather than including
+ * one. There's no legitimate reason for a genuinely empty "()" (or
+ * whitespace-only "( )") to appear in generated prose, so this is safe to
+ * strip unconditionally, including the leading space it usually leaves.
+ */
+export function stripEmptyParens(text: string): string {
+  return text.replace(/\s*\(\s*\)/g, "");
+}
+
+/**
  * Strips markdown syntax that shouldn't appear in plain-text channel posts
  * (LinkedIn/X/newsletter). Never applied to the article's body_markdown,
  * which legitimately is markdown.
@@ -46,10 +59,10 @@ export function stripMarkdownArtifacts(text: string): string {
 
 /** Applies both cleanups appropriately for a channel post body. */
 export function cleanChannelText(text: string): string {
-  return stripMarkdownArtifacts(stripLeakedCitationIds(stripEmDashes(text)));
+  return stripMarkdownArtifacts(stripEmptyParens(stripLeakedCitationIds(stripEmDashes(text))));
 }
 
-/** Applies only the em-dash and leaked-citation-ID cleanups, for text that legitimately keeps markdown (the article). */
+/** Applies only the em-dash and leaked-citation cleanups, for text that legitimately keeps markdown (the article). */
 export function cleanArticleText(text: string): string {
-  return stripLeakedCitationIds(stripEmDashes(text));
+  return stripEmptyParens(stripLeakedCitationIds(stripEmDashes(text)));
 }

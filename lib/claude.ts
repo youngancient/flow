@@ -1,5 +1,6 @@
 import "server-only";
 import Anthropic from "@anthropic-ai/sdk";
+import { ZodError } from "zod";
 import {
   buildPlanAndGenerateSchema,
   buildEvaluationSchema,
@@ -16,7 +17,7 @@ import {
   HOUSE_STYLE,
   DRAFT_OPTION_LABELS,
 } from "./rules";
-import { cleanArticleText, cleanChannelText } from "./style-guard";
+import { cleanArticleText, cleanChannelText, stripLeakedCitationIds } from "./style-guard";
 
 /**
  * Model tiering — a deliberate cost-awareness decision (artifact/design.md,
@@ -119,6 +120,40 @@ async function callTool({
   };
 }
 
+/**
+ * Max total attempts for a schema-validation failure — a single malformed
+ * field somewhere in the response (bad enum value, an empty required
+ * string, a whole missing object) that isn't a max_tokens truncation and
+ * isn't the deterministic rule-violation retry adaptToChannels already
+ * does — same "ask again, it's probably a one-off" reasoning, just for
+ * structural validity instead of content rules. Only a ZodError triggers a
+ * retry; any other error (a real API failure, a missing tool call,
+ * truncation) rethrows immediately, since those aren't the kind of problem
+ * a second identical attempt is likely to fix. Was 2 — observed in testing
+ * that a low/zero-grounding evaluation (nothing real to cite) fails schema
+ * validation more often than normal, and 2 attempts wasn't always enough
+ * to avoid surfacing as a full pipeline failure even though a subsequent
+ * manual retry succeeded.
+ */
+const MAX_SCHEMA_RETRY_ATTEMPTS = 3;
+
+async function callToolWithRetry<T>(
+  params: ToolCallParams,
+  parse: (data: unknown) => T
+): Promise<LlmCallResult<T>> {
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= MAX_SCHEMA_RETRY_ATTEMPTS; attempt++) {
+    const result = await callTool(params);
+    try {
+      return { data: parse(result.data), inputTokens: result.inputTokens, outputTokens: result.outputTokens };
+    } catch (err) {
+      if (!(err instanceof ZodError)) throw err;
+      lastError = err;
+    }
+  }
+  throw lastError;
+}
+
 const chunkIdSchema = (allowedChunkIds: string[]) => ({
   type: "array",
   items: allowedChunkIds.length > 0 ? { type: "string", enum: allowedChunkIds } : { type: "string" },
@@ -157,6 +192,8 @@ ${groundingNote}
 Available source excerpts (cite ONLY these IDs in source_chunk_ids, never invent an ID):
 ${excerptsBlock}
 
+If excerpts from different sources disagree on a fact, figure, or stance, do not blend them into a single unqualified claim. Prefer the more authoritative or more recent source, and briefly note the discrepancy in the text (e.g. "some sources report X, though Y is more recent") rather than silently picking one side.
+
 Produce a content plan (primary keyword + outline) and exactly 3 distinct article options (labeled A, B, C). Give the three options genuinely different angles — for example one data-led, one narrative/case-study-led, one practical how-to — so they are meaningfully different choices, not near-duplicates. Follow these SEO rules:
 
 ${SEO_BEST_PRACTICES}
@@ -164,7 +201,7 @@ ${SEO_BEST_PRACTICES}
 Every option's body_markdown must be well-formed markdown (one H1, H2 sections, H3 where needed). Cite the excerpts that actually support each claim via source_chunk_ids — do not cite an excerpt that doesn't support what you wrote, and never reference an ID that wasn't given to you above.
 `.trim();
 
-  const result = await callTool({
+  const result = await callToolWithRetry({
     model: MODEL_DRAFTING,
     system:
       "You are a senior content strategist and SEO editor for a marketing agency. You write clearly, cite only the source material you're given, and never fabricate facts, statistics, or quotes.",
@@ -214,9 +251,9 @@ Every option's body_markdown must be well-formed markdown (one H1, H2 sections, 
       },
       required: ["plan", "options"],
     },
-  });
+  }, (data) => buildPlanAndGenerateSchema(allowedChunkIds).parse(data));
 
-  const parsed = buildPlanAndGenerateSchema(allowedChunkIds).parse(result.data);
+  const parsed = result.data;
   parsed.options = parsed.options.map((o) => ({ ...o, body_markdown: cleanArticleText(o.body_markdown) }));
 
   return { ...parsed, inputTokens: result.inputTokens, outputTokens: result.outputTokens };
@@ -227,6 +264,8 @@ Every option's body_markdown must be well-formed markdown (one H1, H2 sections, 
 // ---------------------------------------------------------------------------
 
 export async function evaluateDrafts(params: {
+  rawIdea: string;
+  targetAudience: string;
   drafts: Array<{ optionLabel: string; title: string; bodyMarkdown: string; citedExcerpts: ExcerptForPrompt[] }>;
 }) {
   const draftsBlock = params.drafts
@@ -239,16 +278,23 @@ export async function evaluateDrafts(params: {
     .join("\n\n=====\n\n");
 
   const userPrompt = `
+Original content idea: ${params.rawIdea}
+Target audience: ${params.targetAudience}
+
 Evaluate each of the following draft options against this rubric:
 
 ${CONTENT_EVALUATION_RUBRIC}
 
+For topic_relevance specifically: score how well the draft actually addresses the original content idea and audience above, not just whether the draft is internally coherent and well-sourced. A well-written, well-grounded article that has drifted onto a different topic than the one requested must score low on topic_relevance even if every other criterion is strong.
+
 For unsupported_claims and sections_needing_revision, quote the flagged text VERBATIM from the draft body — do not paraphrase or describe it, since the exact quote is used to highlight it in place for the reviewer.
+
+In every "reason" and in recommended_changes, never reference an excerpt by its bracketed ID (e.g. "[a1f2093f-...]") — that ID is an internal label for you, not something a human reviewer can make sense of. Describe the excerpt instead (e.g. "the source describing space resource commoditization").
 
 ${draftsBlock}
 `.trim();
 
-  const result = await callTool({
+  const result = await callToolWithRetry({
     model: MODEL_EVAL,
     system:
       "You are a rigorous, skeptical content quality reviewer. You have no stake in any draft passing. Flag every claim that isn't traceable to the provided excerpts.",
@@ -313,9 +359,9 @@ ${draftsBlock}
       },
       required: ["results"],
     },
-  });
+  }, (data) => buildEvaluationSchema().parse(data));
 
-  const parsed = buildEvaluationSchema().parse(result.data);
+  const parsed = result.data;
 
   const normalized = parsed.results.map((r) => normalizeEvaluation(r));
 
@@ -325,10 +371,17 @@ ${draftsBlock}
 export type NormalizedEvaluation = ReturnType<typeof normalizeEvaluation>;
 
 /**
- * Deterministic guardrail: if source_grounding or factual_consistency
- * scores low, force overall_status to at most 'revise' even if the model
- * said 'pass'. The raw model output is preserved alongside so the
- * discrepancy stays visible. See artifact/design.md, Stage 4.
+ * Deterministic guardrail: if source_grounding, factual_consistency, or
+ * topic_relevance scores low, force overall_status to at most 'revise' even
+ * if the model said 'pass'. topic_relevance is included alongside the other
+ * two because a draft can be well-grounded and factually consistent with
+ * its own cited sources while having drifted onto a topic other than the
+ * one actually requested (e.g. a nonsense idea that happens to share a
+ * token with an unrelated real topic) — that's exactly the kind of
+ * self-consistent-but-wrong case this guardrail exists to catch, not just
+ * trust the model's own pass/fail call for. The raw model output is
+ * preserved alongside so the discrepancy stays visible. See
+ * artifact/design.md, Stage 4.
  */
 function normalizeEvaluation(r: {
   option_label: "A" | "B" | "C";
@@ -344,18 +397,27 @@ function normalizeEvaluation(r: {
   let overall_status = r.overall_status;
   const groundingWeak = r.criteria.source_grounding.score <= 2;
   const factsWeak = r.criteria.factual_consistency.score <= 2;
-  if ((groundingWeak || factsWeak) && overall_status === "pass") {
+  const offTopic = r.criteria.topic_relevance.score <= 2;
+  if ((groundingWeak || factsWeak || offTopic) && overall_status === "pass") {
     overall_status = "revise";
   }
+
+  // Deterministic backstop for the prompt instruction above — the "quote"
+  // field is left untouched since it must stay byte-for-byte verbatim from
+  // the (already-cleaned) draft body for ArticlePreview's highlight-in-place
+  // indexOf match to work; only "reason" and recommended_changes are
+  // reviewer-facing prose that can leak a raw excerpt ID.
+  const cleanFlags = (flags: Array<{ quote: string; reason: string }>) =>
+    flags.map((f) => ({ ...f, reason: stripLeakedCitationIds(f.reason) }));
 
   return {
     optionLabel: r.option_label,
     overallStatus: overall_status,
     combinedScore: combined_score,
     criteria: r.criteria,
-    unsupportedClaims: r.unsupported_claims,
-    sectionsNeedingRevision: r.sections_needing_revision,
-    recommendedChanges: r.recommended_changes,
+    unsupportedClaims: cleanFlags(r.unsupported_claims),
+    sectionsNeedingRevision: cleanFlags(r.sections_needing_revision),
+    recommendedChanges: stripLeakedCitationIds(r.recommended_changes),
     rawResponse: r,
   };
 }
@@ -398,7 +460,7 @@ ${SEO_BEST_PRACTICES}
 ${itemsBlock}
 `.trim();
 
-  const result = await callTool({
+  const result = await callToolWithRetry({
     model: MODEL_REVISE,
     system:
       "You are revising a draft based on specific feedback. Make targeted fixes, not a wholesale rewrite. Stay grounded in the provided source excerpts.",
@@ -427,9 +489,9 @@ ${itemsBlock}
       },
       required: ["revisions"],
     },
-  });
+  }, (data) => buildRevisionSchema(allowedChunkIds).parse(data));
 
-  const parsed = buildRevisionSchema(allowedChunkIds).parse(result.data);
+  const parsed = result.data;
   parsed.revisions = parsed.revisions.map((r) => ({ ...r, body_markdown: cleanArticleText(r.body_markdown) }));
 
   return { ...parsed, inputTokens: result.inputTokens, outputTokens: result.outputTokens };
@@ -455,7 +517,7 @@ Article body:
 ${params.bodyMarkdown}
 `.trim();
 
-  const result = await callTool({
+  const result = await callToolWithRetry({
     model: MODEL_CHANNEL_ADAPT,
     system:
       "You are a platform-formatting specialist. Reformat the given article for each channel; do not add new claims beyond what's in the article.",
@@ -484,9 +546,9 @@ ${params.bodyMarkdown}
       },
       required: ["linkedin", "x", "newsletter"],
     },
-  });
+  }, (data) => channelAdaptationSchema.parse(data));
 
-  const parsed = channelAdaptationSchema.parse(result.data);
+  const parsed = result.data;
 
   return {
     linkedin: { body: cleanChannelText(parsed.linkedin.body) },
@@ -560,23 +622,30 @@ Article body:
 ${params.bodyMarkdown}
 `.trim();
 
-  const result = await callTool({
-    model: MODEL_CHANNEL_ADAPT,
-    system:
-      "You are a platform-formatting specialist. Reformat the given article for one channel; do not add new claims beyond what's in the article.",
-    userPrompt,
-    maxTokens: 3000,
-    toolName: `submit_${channel}_adaptation`,
-    toolDescription: `Submit the ${channel} adaptation only.`,
-    inputSchema: SINGLE_CHANNEL_TOOL_SCHEMA[channel],
-  });
+  const result = await callToolWithRetry(
+    {
+      model: MODEL_CHANNEL_ADAPT,
+      system:
+        "You are a platform-formatting specialist. Reformat the given article for one channel; do not add new claims beyond what's in the article.",
+      userPrompt,
+      maxTokens: 3000,
+      toolName: `submit_${channel}_adaptation`,
+      toolDescription: `Submit the ${channel} adaptation only.`,
+      inputSchema: SINGLE_CHANNEL_TOOL_SCHEMA[channel],
+    },
+    (data) => {
+      if (channel === "linkedin") return singleChannelSchemas.linkedin.parse(data);
+      if (channel === "x") return singleChannelSchemas.x.parse(data);
+      return singleChannelSchemas.newsletter.parse(data);
+    }
+  );
 
   if (channel === "linkedin") {
-    const parsed = singleChannelSchemas.linkedin.parse(result.data);
+    const parsed = result.data as ReturnType<typeof singleChannelSchemas.linkedin.parse>;
     return { body: cleanChannelText(parsed.body), inputTokens: result.inputTokens, outputTokens: result.outputTokens };
   }
   if (channel === "x") {
-    const parsed = singleChannelSchemas.x.parse(result.data);
+    const parsed = result.data as ReturnType<typeof singleChannelSchemas.x.parse>;
     return {
       body: cleanChannelText(parsed.body),
       hashtags: parsed.hashtags,
@@ -584,7 +653,7 @@ ${params.bodyMarkdown}
       outputTokens: result.outputTokens,
     };
   }
-  const parsed = singleChannelSchemas.newsletter.parse(result.data);
+  const parsed = result.data as ReturnType<typeof singleChannelSchemas.newsletter.parse>;
   return {
     body: cleanChannelText(parsed.body),
     subject: cleanChannelText(parsed.subject),

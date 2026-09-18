@@ -7,6 +7,7 @@ import { supabaseService } from "@/lib/supabase/service";
 import { assertOk } from "@/lib/supabase/assert";
 import { reviseDrafts } from "@/lib/claude";
 import { generateChannelOutputs, regenerateSingleChannelOutput } from "@/lib/pipeline";
+import { postPipelineError } from "@/lib/discord";
 import { MAX_HUMAN_REVISION_ROUNDS } from "@/lib/rules";
 import type { ActionResult } from "@/app/actions";
 
@@ -86,7 +87,10 @@ export async function selectDraft(requestId: string, draftId: string): Promise<A
   try {
     await assertOk(db.from("content_requests").update({ selected_draft_id: draftId }).eq("id", requestId), "content_requests selected_draft_id update");
   } catch (err) {
-    return { ok: false, error: err instanceof Error ? err.message : "Failed to select draft" };
+    const message = err instanceof Error ? err.message : "Failed to select draft";
+    console.error(`selectDraft: failed to set selected_draft_id for request ${requestId}:`, err);
+    postPipelineError({ requestId, stage: "select_draft", error: message });
+    return { ok: false, error: message };
   }
 
   if (!hasExistingOutputs || isSwitchingDraft) {
@@ -142,7 +146,10 @@ export async function editDraft(
       "drafts insert (human_edit)"
     );
   } catch (err) {
-    return { ok: false, error: err instanceof Error ? err.message : "Failed to save edit" };
+    const message = err instanceof Error ? err.message : "Failed to save edit";
+    console.error(`editDraft: failed to save human edit for draft ${draftId}:`, err);
+    postPipelineError({ requestId: draft.request_id, stage: "edit_draft", error: message });
+    return { ok: false, error: message };
   }
 
   revalidatePath(`/requests/${draft.request_id}`);
@@ -184,7 +191,10 @@ export async function requestDraftRevision(draftId: string, feedback: string): P
       excerpts,
     });
   } catch (err) {
-    return { ok: false, error: err instanceof Error ? err.message : "Revision failed" };
+    const message = err instanceof Error ? err.message : "Revision failed";
+    console.error(`requestDraftRevision: reviseDrafts failed for draft ${draftId}:`, err);
+    postPipelineError({ requestId: draft.request_id, stage: "request_draft_revision", error: message });
+    return { ok: false, error: message };
   }
 
   const revised = result.revisions[0];
@@ -209,7 +219,10 @@ export async function requestDraftRevision(draftId: string, feedback: string): P
       "drafts insert (human_requested_ai)"
     );
   } catch (err) {
-    return { ok: false, error: err instanceof Error ? err.message : "Failed to save revision" };
+    const message = err instanceof Error ? err.message : "Failed to save revision";
+    console.error(`requestDraftRevision: failed to save revised draft for draft ${draftId}:`, err);
+    postPipelineError({ requestId: draft.request_id, stage: "save_draft_revision", error: message });
+    return { ok: false, error: message };
   }
 
   revalidatePath(`/requests/${draft.request_id}`);
@@ -246,7 +259,10 @@ export async function approveChannelOutput(channelOutputId: string, editedBody?:
       "channel_outputs approve update"
     );
   } catch (err) {
-    return { ok: false, error: err instanceof Error ? err.message : "Failed to approve" };
+    const message = err instanceof Error ? err.message : "Failed to approve";
+    console.error(`approveChannelOutput: failed to approve ${channelOutputId}:`, err);
+    postPipelineError({ requestId: output.request_id, stage: "approve_channel_output", error: message });
+    return { ok: false, error: message };
   }
 
   revalidatePath(`/requests/${output.request_id}`);
@@ -277,7 +293,10 @@ export async function rejectChannelOutput(channelOutputId: string): Promise<Acti
       "channel_outputs reject update"
     );
   } catch (err) {
-    return { ok: false, error: err instanceof Error ? err.message : "Failed to reject" };
+    const message = err instanceof Error ? err.message : "Failed to reject";
+    console.error(`rejectChannelOutput: failed to reject ${channelOutputId}:`, err);
+    postPipelineError({ requestId: output.request_id, stage: "reject_channel_output", error: message });
+    return { ok: false, error: message };
   }
 
   revalidatePath(`/requests/${output.request_id}`);
@@ -326,7 +345,10 @@ export async function unapproveChannelOutput(channelOutputId: string): Promise<A
       "channel_outputs unapprove update"
     );
   } catch (err) {
-    return { ok: false, error: err instanceof Error ? err.message : "Failed to unapprove" };
+    const message = err instanceof Error ? err.message : "Failed to unapprove";
+    console.error(`unapproveChannelOutput: failed to unapprove ${channelOutputId}:`, err);
+    postPipelineError({ requestId: output.request_id, stage: "unapprove_channel_output", error: message });
+    return { ok: false, error: message };
   }
 
   revalidatePath(`/requests/${output.request_id}`);
@@ -382,7 +404,10 @@ export async function markSocialPosted(channelOutputId: string): Promise<ActionR
       "channel_outputs mark-posted update"
     );
   } catch (err) {
-    return { ok: false, error: err instanceof Error ? err.message : "Failed to mark posted" };
+    const message = err instanceof Error ? err.message : "Failed to mark posted";
+    console.error(`markSocialPosted: failed to mark ${channelOutputId} posted:`, err);
+    postPipelineError({ requestId: output.request_id, stage: "mark_social_posted", error: message });
+    return { ok: false, error: message };
   }
 
   revalidatePath(`/requests/${output.request_id}`);
@@ -418,7 +443,10 @@ export async function scheduleSocialPost(channelOutputId: string, scheduledFor: 
       "channel_outputs schedule update"
     );
   } catch (err) {
-    return { ok: false, error: err instanceof Error ? err.message : "Failed to schedule" };
+    const message = err instanceof Error ? err.message : "Failed to schedule";
+    console.error(`scheduleSocialPost: failed to schedule ${channelOutputId}:`, err);
+    postPipelineError({ requestId: output.request_id, stage: "schedule_social_post", error: message });
+    return { ok: false, error: message };
   }
 
   revalidatePath(`/requests/${output.request_id}`);
@@ -450,7 +478,10 @@ export async function cancelScheduledSocialPost(channelOutputId: string): Promis
       "channel_outputs cancel-schedule update"
     );
   } catch (err) {
-    return { ok: false, error: err instanceof Error ? err.message : "Failed to cancel schedule" };
+    const message = err instanceof Error ? err.message : "Failed to cancel schedule";
+    console.error(`cancelScheduledSocialPost: failed to cancel schedule for ${channelOutputId}:`, err);
+    postPipelineError({ requestId: output.request_id, stage: "cancel_scheduled_social_post", error: message });
+    return { ok: false, error: message };
   }
 
   revalidatePath(`/requests/${output.request_id}`);
@@ -481,11 +512,14 @@ export async function retryPipelineRun(requestId: string): Promise<ActionResult>
   // the "is it stuck or working" problem this fixes.
   try {
     await assertOk(
-      db.from("content_requests").update({ stage: "queued", pipeline_error: null }).eq("id", requestId),
+      db.from("content_requests").update({ stage: "queued", pipeline_error: null, pipeline_started_at: new Date().toISOString() }).eq("id", requestId),
       "content_requests retry stage reset"
     );
   } catch (err) {
-    return { ok: false, error: err instanceof Error ? err.message : "Failed to retry" };
+    const message = err instanceof Error ? err.message : "Failed to retry";
+    console.error(`retryPipelineRun: failed to reset stage for request ${requestId}:`, err);
+    postPipelineError({ requestId, stage: "retry_pipeline_run", error: message });
+    return { ok: false, error: message };
   }
 
   after(() => runPipeline(requestId));

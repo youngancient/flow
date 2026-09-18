@@ -1,12 +1,12 @@
 import { z } from "zod";
-import { DRAFT_OPTION_LABELS } from "./rules";
+import { DRAFT_OPTION_LABELS, MAX_SOURCE_URLS } from "./rules";
 
 /** Input validation for a new content request — the same layer that enforces the length caps documented in artifact/design.md. */
 export const contentRequestInputSchema = z.object({
   submissionKey: z.string().uuid(),
   rawIdea: z.string().trim().min(1).max(500),
   targetAudience: z.string().trim().min(1).max(300),
-  sourceUrl: z.string().trim().url().max(2000).optional().or(z.literal("")),
+  sourceUrls: z.array(z.string().trim().url().max(2000)).max(MAX_SOURCE_URLS).default([]),
   supportingNotes: z.string().trim().max(5000).optional().or(z.literal("")),
 });
 

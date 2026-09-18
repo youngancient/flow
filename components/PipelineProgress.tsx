@@ -2,7 +2,9 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import { toast } from "sonner";
 import { Spinner } from "./Spinner";
+import { formatElapsedSeconds } from "@/lib/format";
 
 type LogEntry = {
   stage: string;
@@ -35,11 +37,13 @@ const TERMINAL = new Set(["ready_for_review", "failed"]);
  */
 export function PipelineProgress({
   requestId,
+  startedAt,
   initialStage,
   initialLog,
   initialError,
 }: {
   requestId: string;
+  startedAt: string;
   initialStage: string;
   initialLog: LogEntry[];
   initialError: string | null;
@@ -51,13 +55,18 @@ export function PipelineProgress({
   const [elapsed, setElapsed] = useState(0);
   const pollFailures = useRef(0);
 
-  // Elapsed-time ticker — starts at 0 on every render (server and client
-  // alike), so there's nothing for hydration to diff; only client-only
-  // interval ticks after mount change it.
+  // Elapsed-time ticker — anchored to the request's real created_at, not a
+  // count-since-mount, so navigating away and back (a fresh mount) doesn't
+  // restart it back to 0. State still starts at 0 on both server and client
+  // render (nothing for hydration to diff); the effect corrects it to the
+  // real value immediately after mount, client-only.
   useEffect(() => {
-    const id = setInterval(() => setElapsed((s) => s + 1), 1000);
+    const start = new Date(startedAt).getTime();
+    const tick = () => setElapsed(Math.max(0, Math.floor((Date.now() - start) / 1000)));
+    tick();
+    const id = setInterval(tick, 1000);
     return () => clearInterval(id);
-  }, []);
+  }, [startedAt]);
 
   useEffect(() => {
     if (TERMINAL.has(stage)) return;
@@ -71,6 +80,9 @@ export function PipelineProgress({
         setStage(json.data.request.stage);
         setLog(json.data.request.pipeline_log ?? []);
         setError(json.data.request.pipeline_error ?? null);
+        if (json.data.request.stage === "failed") {
+          toast.error(json.data.request.pipeline_error ?? "Pipeline failed");
+        }
         if (TERMINAL.has(json.data.request.stage)) {
           router.refresh();
         }
@@ -97,7 +109,7 @@ export function PipelineProgress({
           {!failed && <Spinner />}
           {failed ? "Failed" : "Working"}
         </span>
-        <span className="text-xs text-muted">{elapsed}s elapsed</span>
+        <span className="text-xs text-muted">{formatElapsedSeconds(elapsed)} elapsed</span>
       </div>
 
       <ol className="flex flex-wrap items-center gap-x-1 gap-y-3">

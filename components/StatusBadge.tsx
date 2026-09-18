@@ -7,6 +7,11 @@ const TONE_MAP: Record<string, "approve" | "flag" | "pending" | "neutral"> = {
   revising: "pending",
   ready_for_review: "approve",
   failed: "flag",
+  // publish rollup (derived — see lib/publishStatus.ts)
+  published: "approve",
+  partially_published: "pending",
+  publish_failed: "flag",
+  generation_failed: "flag",
   // evaluations.overall_status
   pass: "approve",
   revise: "pending",
@@ -15,9 +20,8 @@ const TONE_MAP: Record<string, "approve" | "flag" | "pending" | "neutral"> = {
   pending_review: "pending",
   approved: "approve",
   rejected: "flag",
-  // channel_outputs.publish_status
+  // channel_outputs.publish_status ("queued" shares content_requests.stage's entry above)
   not_queued: "neutral",
-  queued_publish: "pending",
   scheduled: "pending",
   sending: "pending",
   sent: "approve",

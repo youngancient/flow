@@ -59,13 +59,27 @@ export function RequestForm() {
       </div>
 
       <div className="flex flex-col gap-1.5">
-        <label htmlFor="sourceUrl" className="text-sm text-muted">
-          Source URL (optional)
+        <label htmlFor="sourceUrl1" className="text-sm text-muted">
+          Source URLs (optional)
         </label>
         <input
-          id="sourceUrl"
-          name="sourceUrl"
+          id="sourceUrl1"
+          name="sourceUrls"
           type="url"
+          className="border border-rule bg-transparent px-2 py-1.5 text-sm outline-none focus:border-ink"
+          placeholder="https://…"
+        />
+        <input
+          name="sourceUrls"
+          type="url"
+          aria-label="Source URL 2 (optional)"
+          className="border border-rule bg-transparent px-2 py-1.5 text-sm outline-none focus:border-ink"
+          placeholder="https://…"
+        />
+        <input
+          name="sourceUrls"
+          type="url"
+          aria-label="Source URL 3 (optional)"
           className="border border-rule bg-transparent px-2 py-1.5 text-sm outline-none focus:border-ink"
           placeholder="https://…"
         />

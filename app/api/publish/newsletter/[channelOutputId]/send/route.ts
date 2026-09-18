@@ -15,7 +15,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
   const { data: output } = await db
     .from("channel_outputs")
-    .select("review_status, reviewed_by, content_requests(requested_by)")
+    .select("channel, review_status, reviewed_by, content_requests(requested_by)")
     .eq("id", channelOutputId)
     .single();
 
@@ -26,6 +26,9 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
   const owner = Array.isArray(ownerField) ? ownerField[0]?.requested_by : ownerField?.requested_by;
   if (owner !== actingEmail) {
     return NextResponse.json({ ok: false, error: "Only this request's owner can do that" }, { status: 403 });
+  }
+  if (output.channel !== "newsletter") {
+    return NextResponse.json({ ok: false, error: "This endpoint only handles newsletter channel outputs" }, { status: 400 });
   }
   if (output.review_status !== "approved") {
     return NextResponse.json({ ok: false, error: "Cannot send before approval" }, { status: 403 });

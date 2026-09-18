@@ -23,6 +23,28 @@ export type SendResult =
 export async function sendNewsletterNow(channelOutputId: string): Promise<SendResult> {
   const db = supabaseService();
 
+  // Checked up front, before any mutation — the compare-and-swap claim below
+  // would otherwise flip a wrong-channel row to "sending" before we ever
+  // noticed, which would then need its own undo logic. A row reaching this
+  // function at all with the wrong channel means something upstream (a
+  // sweep query, a route handler, a future caller) failed to scope itself
+  // to newsletter — that's a bug worth alerting on, not a silent skip.
+  const { data: existing, error: fetchError } = await db
+    .from("channel_outputs")
+    .select("channel, request_id")
+    .eq("id", channelOutputId)
+    .single();
+
+  if (fetchError || !existing) {
+    return { status: "failed", error: fetchError?.message ?? "Channel output not found" };
+  }
+  if (existing.channel !== "newsletter") {
+    const message = `channel_outputs ${channelOutputId} is a "${existing.channel}" row, not newsletter — refusing to send it as an email campaign`;
+    console.error(message);
+    postPipelineError({ requestId: existing.request_id, stage: "newsletter_channel_mismatch", error: message });
+    return { status: "failed", error: message };
+  }
+
   const { data: claimed, error: claimError } = await db
     .from("channel_outputs")
     .update({ publish_status: "sending", updated_at: new Date().toISOString() })
@@ -35,6 +57,8 @@ export async function sendNewsletterNow(channelOutputId: string): Promise<SendRe
     // A real database error (not just "no row matched the compare-and-swap")
     // used to be indistinguishable from an already-claimed row here — both
     // returned the same silent skip, hiding an actual failure.
+    console.error(`channel_outputs claim update failed for ${channelOutputId}:`, claimError.message);
+    postPipelineError({ requestId: existing.request_id, stage: "newsletter_claim", error: claimError.message });
     return { status: "failed", error: claimError.message };
   }
   if (!claimed) {
@@ -102,6 +126,17 @@ export async function sendNewsletterNow(channelOutputId: string): Promise<SendRe
 
 export async function scheduleNewsletter(channelOutputId: string, scheduledFor: string): Promise<void> {
   const db = supabaseService();
+
+  // A bare .eq("channel", "newsletter") added to the update's WHERE filters
+  // below would just silently match zero rows for the wrong channel —
+  // assertOk only catches a real Postgres error, not "nothing matched" — so
+  // this has to be an explicit check that throws, same reasoning as
+  // sendNewsletterNow's channel guard.
+  const { data: existing } = await db.from("channel_outputs").select("channel").eq("id", channelOutputId).single();
+  if (existing?.channel !== "newsletter") {
+    throw new Error(`channel_outputs ${channelOutputId} is a "${existing?.channel ?? "unknown"}" row, not newsletter`);
+  }
+
   await assertOk(
     db
       .from("channel_outputs")
@@ -117,19 +152,31 @@ export async function scheduleNewsletter(channelOutputId: string, scheduledFor: 
 }
 
 /** Sweeps due scheduled sends. Called by the optional cron target (POST /api/publish/run-due). */
-export async function runDueScheduledSends(): Promise<{ processed: number }> {
+export async function runDueScheduledSends(): Promise<{ processed: number; sent: number; failed: number }> {
   const db = supabaseService();
   const { data: due } = await db
     .from("channel_outputs")
     .select("id")
+    .eq("channel", "newsletter")
     .eq("publish_status", "scheduled")
     .lte("scheduled_for", new Date().toISOString());
 
+  let sent = 0;
+  let failed = 0;
   for (const row of due ?? []) {
-    await sendNewsletterNow(row.id);
+    // sendNewsletterNow already alerts Discord per-item on failure — this
+    // loop's own job is just to make sure the sweep's own caller/logs don't
+    // discard that outcome the way this used to (await with no result check).
+    const result = await sendNewsletterNow(row.id);
+    if (result.status === "sent") {
+      sent++;
+    } else if (result.status === "failed") {
+      failed++;
+      console.error(`runDueScheduledSends: send failed for channel_output ${row.id}:`, result.error);
+    }
   }
 
-  return { processed: due?.length ?? 0 };
+  return { processed: due?.length ?? 0, sent, failed };
 }
 
 function renderNewsletterHtml(subject: string, body: string): string {
