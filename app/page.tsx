@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { supabaseService } from "@/lib/supabase/service";
+import { requireSessionEmailOrRedirect } from "@/lib/supabase/auth";
 import { RequestForm } from "@/components/RequestForm";
 import { StatusBadge } from "@/components/StatusBadge";
 import { StatTile } from "@/components/StatTile";
@@ -30,6 +31,7 @@ type RequestRow = {
 };
 
 export default async function Home() {
+  await requireSessionEmailOrRedirect(); // no route is reachable by an unauthenticated request — see artifact/design.md, "Authentication"
   const db = supabaseService();
 
   const [{ data: requests }, { data: queueRows }] = await Promise.all([

@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { supabaseService } from "@/lib/supabase/service";
-import { requireSessionEmail } from "@/lib/supabase/auth";
+import { requireSessionEmailOrRedirect } from "@/lib/supabase/auth";
 import { StatusBadge } from "@/components/StatusBadge";
 import { PipelineLog } from "@/components/PipelineLog";
 import { SourceList, type SourceRow } from "@/components/SourceList";
@@ -23,7 +23,7 @@ export const maxDuration = 120; // hosts actions.ts's Server Actions (selectDraf
 export default async function RequestPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   const db = supabaseService();
-  const sessionEmail = await requireSessionEmail();
+  const sessionEmail = await requireSessionEmailOrRedirect();
 
   const { data: request } = await db.from("content_requests").select("*").eq("id", id).single();
   if (!request) notFound();

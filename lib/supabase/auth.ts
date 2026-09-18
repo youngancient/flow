@@ -1,5 +1,6 @@
 import "server-only";
 import { cookies } from "next/headers";
+import { redirect } from "next/navigation";
 import { createServerClient, type CookieOptions } from "@supabase/ssr";
 
 const url = process.env.NEXT_PUBLIC_SUPABASE_URL!;
@@ -43,11 +44,27 @@ export async function getSessionUser() {
   return user;
 }
 
-/** Returns the current session's email, or throws — for use inside actions/routes that require auth. */
+/** Returns the current session's email, or throws — for use inside Server Actions/Route Handlers, which need a catchable error to turn into an { ok: false } result, not a hard navigation. */
 export async function requireSessionEmail(): Promise<string> {
   const user = await getSessionUser();
   if (!user?.email) {
     throw new Error("Unauthorized: no active session");
+  }
+  return user.email;
+}
+
+/**
+ * Page-only counterpart to requireSessionEmail: redirects to /login instead
+ * of throwing, so visiting a protected page while logged out lands on the
+ * login screen instead of Next.js's generic error boundary. Never use this
+ * from a Server Action or Route Handler — redirect() there would abort the
+ * action/response in a way callers don't expect; use requireSessionEmail /
+ * requireApiAuth instead, which let the caller decide what to return.
+ */
+export async function requireSessionEmailOrRedirect(): Promise<string> {
+  const user = await getSessionUser();
+  if (!user?.email) {
+    redirect("/login");
   }
   return user.email;
 }

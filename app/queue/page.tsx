@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { supabaseService } from "@/lib/supabase/service";
+import { requireSessionEmailOrRedirect } from "@/lib/supabase/auth";
 import { getSubscriberPreview, type SubscriberPreview } from "@/lib/brevo";
 import { QueueTable, type QueueRow } from "@/components/QueueTable";
 import { SubscriberList } from "@/components/SubscriberList";
@@ -8,6 +9,7 @@ import { ThemeToggle } from "@/components/ThemeToggle";
 export const dynamic = "force-dynamic"; // always-fresh queue state, never statically cached
 
 export default async function QueuePage() {
+  await requireSessionEmailOrRedirect(); // no route is reachable by an unauthenticated request — see artifact/design.md, "Authentication"
   const db = supabaseService();
 
   let subscriberPreview: SubscriberPreview | null = null;
