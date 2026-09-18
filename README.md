@@ -38,4 +38,3 @@ This is an internal team tool, not a public product — login-only, no public si
 - **Ownership**: every request has a single owner (whoever submitted it). Only the owner can act on it (select a draft, approve/reject, schedule, publish); everyone else has full read access but no controls.
 - **Cost visibility**: every LLM call's token usage and estimated cost is logged per pipeline stage and rolled up into a "Total spend" figure on the dashboard.
 - **Scheduled sends**: `POST /api/publish/run-due` is an optional sweep endpoint meant to be hit by an external scheduler (e.g. Vercel Cron); it's protected by `CRON_SECRET` and does nothing if that's unset.
-- **No automated test suite** — this has been validated through manual, scenario-based QA against the running app rather than a CI test suite.
