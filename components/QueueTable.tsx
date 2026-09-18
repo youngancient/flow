@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { StatusBadge } from "./StatusBadge";
-import { formatDateTime } from "@/lib/format";
+import { LocalTime } from "./LocalTime";
 
 export type QueueRow = {
   id: string;
@@ -42,11 +42,13 @@ export function QueueTable({ rows }: { rows: QueueRow[] }) {
               <StatusBadge status={row.publish_status} />
             </td>
             <td className="py-2 text-xs text-muted">
-              {row.publish_status === "sent" && row.sent_at
-                ? `sent ${formatDateTime(row.sent_at)}`
-                : row.publish_status === "scheduled" && row.scheduled_for
-                  ? `scheduled for ${formatDateTime(row.scheduled_for)}`
-                  : "—"}
+              {row.publish_status === "sent" && row.sent_at ? (
+                <>sent <LocalTime iso={row.sent_at} withTime /></>
+              ) : row.publish_status === "scheduled" && row.scheduled_for ? (
+                <>scheduled for <LocalTime iso={row.scheduled_for} withTime /></>
+              ) : (
+                "—"
+              )}
               {row.last_error && <span className="text-flag">, {row.last_error}</span>}
             </td>
           </tr>

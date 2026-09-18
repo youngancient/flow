@@ -1,5 +1,5 @@
 import type { SubscriberPreview } from "@/lib/brevo";
-import { formatDate } from "@/lib/format";
+import { LocalTime } from "./LocalTime";
 
 /** Read-only — no add/remove/edit here. See artifact/design.md, "Newsletter subscribers". */
 export function SubscriberList({ preview }: { preview: SubscriberPreview }) {
@@ -20,7 +20,7 @@ export function SubscriberList({ preview }: { preview: SubscriberPreview }) {
           <li key={row.email} className="flex items-center justify-between gap-4">
             <span className={row.unsubscribed ? "text-muted line-through" : ""}>{row.email}</span>
             <span className="shrink-0 text-xs text-muted">
-              {row.unsubscribed ? "unsubscribed" : `since ${formatDate(row.createdAt)}`}
+              {row.unsubscribed ? "unsubscribed" : <>since <LocalTime iso={row.createdAt} /></>}
             </span>
           </li>
         ))}

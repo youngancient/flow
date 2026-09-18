@@ -13,7 +13,7 @@ import { PipelineProgress } from "@/components/PipelineProgress";
 import { SupportingNotes } from "@/components/SupportingNotes";
 import { DRAFT_OPTION_LABELS } from "@/lib/rules";
 import { computePublishRollup, hasUnresolvedChannelGenerationFailure } from "@/lib/publishStatus";
-import { formatDateTime } from "@/lib/format";
+import { LocalTime } from "@/components/LocalTime";
 
 const TERMINAL_STAGES = new Set(["ready_for_review", "failed"]);
 
@@ -100,7 +100,9 @@ export default async function RequestPage({ params }: { params: Promise<{ id: st
             <StatusBadge status={publishRollup ?? request.stage} />
             {request.stage === "failed" && isOwner && <RetryButton requestId={id} />}
           </div>
-          <span className="text-xs text-muted">Created {formatDateTime(request.created_at)}</span>
+          <span className="text-xs text-muted">
+            Created <LocalTime iso={request.created_at} withTime />
+          </span>
         </div>
       </div>
 

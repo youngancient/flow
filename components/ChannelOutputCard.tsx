@@ -4,12 +4,12 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { StatusBadge } from "./StatusBadge";
+import { LocalTime } from "./LocalTime";
 import { Modal } from "./Modal";
 import { LinkedInPreview } from "./LinkedInPreview";
 import { XPreview } from "./XPreview";
 import { NewsletterPreview } from "./NewsletterPreview";
 import { Spinner } from "./Spinner";
-import { formatDateTime } from "@/lib/format";
 import {
   approveChannelOutput,
   rejectChannelOutput,
@@ -274,7 +274,7 @@ export function ChannelOutputCard({ output, isOwner }: { output: ChannelOutput; 
           {output.publish_status === "scheduled" ? (
             <>
               <p className="text-xs text-muted">
-                Scheduled for {output.scheduled_for ? formatDateTime(output.scheduled_for) : "—"}
+                Scheduled for {output.scheduled_for ? <LocalTime iso={output.scheduled_for} withTime /> : "—"}
               </p>
               <div className="flex flex-wrap items-center gap-2">
                 <button onClick={toggleReschedule} disabled={pending} className="cursor-pointer border border-rule px-3 py-1 text-xs disabled:cursor-not-allowed">

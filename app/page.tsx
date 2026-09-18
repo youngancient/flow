@@ -6,7 +6,7 @@ import { StatusBadge } from "@/components/StatusBadge";
 import { StatTile } from "@/components/StatTile";
 import { signOut } from "@/app/actions/auth";
 import { ThemeToggle } from "@/components/ThemeToggle";
-import { formatDate } from "@/lib/format";
+import { LocalTime } from "@/components/LocalTime";
 import { computePublishRollup, hasUnresolvedChannelGenerationFailure, type PublishRollup } from "@/lib/publishStatus";
 
 export const maxDuration = 300; // hosts the createContentRequest Server Action — see artifact/design.md
@@ -184,7 +184,9 @@ export default async function Home() {
                     <td className="py-2 pr-4">
                       <StatusBadge status={rollup ?? r.stage} />
                     </td>
-                    <td className="py-2 text-xs text-muted">{formatDate(r.created_at)}</td>
+                    <td className="py-2 text-xs text-muted">
+                      <LocalTime iso={r.created_at} />
+                    </td>
                   </tr>
                 );
               })}
