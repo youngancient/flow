@@ -19,14 +19,18 @@ export function stripEmDashes(text: string): string {
  * markers (see artifact/design.md, "Deliberately not built": no per-claim
  * citation table). A model occasionally pattern-matches that labeling
  * convention and echoes a raw excerpt ID directly into the body text as a
- * fake inline citation, which should never be visible to a reviewer.
- * Applied to ALL generated text, alongside the matching prompt instruction
- * — same "trust but verify" discipline as the other style-guard checks.
+ * fake inline citation, which should never be visible to a reviewer —
+ * sometimes as a bare `[uuid]`, sometimes labeled like
+ * `[source_chunk_ids: uuid]`, so the match tolerates an optional label
+ * before the ID rather than requiring the brackets to contain only the
+ * UUID. Applied to ALL generated text, alongside the matching prompt
+ * instruction — same "trust but verify" discipline as the other
+ * style-guard checks.
  */
 export function stripLeakedCitationIds(text: string): string {
   const uuid = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
   return text
-    .replace(new RegExp(`\\s*\\[${uuid.source}\\]`, "gi"), "")
+    .replace(new RegExp(`\\s*\\[[^\\]]*?${uuid.source}[^\\]]*?\\]`, "gi"), "")
     .replace(/ {2,}/g, " ");
 }
 
