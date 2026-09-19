@@ -2,7 +2,7 @@
 
 import { redirect } from "next/navigation";
 import { after } from "next/server";
-import { requireSessionEmail } from "@/lib/supabase/auth";
+import { requireSessionEmail, isManager } from "@/lib/supabase/auth";
 import { supabaseService } from "@/lib/supabase/service";
 import { contentRequestInputSchema } from "@/lib/schemas";
 import { runPipeline } from "@/lib/pipeline";
@@ -11,6 +11,9 @@ export type ActionResult = { ok: true } | { ok: false; error: string };
 
 export async function createContentRequest(formData: FormData): Promise<ActionResult> {
   const requestedBy = await requireSessionEmail();
+  if (await isManager()) {
+    return { ok: false, error: "Managers review content, they don't submit requests" };
+  }
 
   const parsed = contentRequestInputSchema.safeParse({
     submissionKey: formData.get("submissionKey"),

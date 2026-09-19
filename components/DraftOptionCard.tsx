@@ -6,6 +6,7 @@ import { ArticlePreview } from "./ArticlePreview";
 import { EvaluationPanel, type EvaluationRow } from "./EvaluationPanel";
 import { Modal } from "./Modal";
 import { Spinner } from "./Spinner";
+import { StatusBadge } from "./StatusBadge";
 import { selectDraft, editDraft, requestDraftRevision } from "@/app/requests/[id]/actions";
 
 export type DraftVersion = {
@@ -33,6 +34,7 @@ export function DraftOptionCard({
   evaluationsByDraftId,
   selectedDraftId,
   hasChannelOutputs,
+  switchBlockReason,
   isOwner,
 }: {
   requestId: string;
@@ -41,6 +43,7 @@ export function DraftOptionCard({
   evaluationsByDraftId: Record<string, EvaluationRow | undefined>;
   selectedDraftId: string | null;
   hasChannelOutputs: boolean;
+  switchBlockReason: string | null;
   isOwner: boolean;
 }) {
   const sorted = [...versions].sort((a, b) => a.version - b.version);
@@ -54,11 +57,22 @@ export function DraftOptionCard({
   const [pendingAction, setPendingAction] = useState<"select" | "save" | "revise" | null>(null);
   const pending = pendingAction !== null;
   const [confirmSwitchDraftId, setConfirmSwitchDraftId] = useState<string | null>(null);
+  const [expanded, setExpanded] = useState(false);
   const editBodyRef = useRef<HTMLTextAreaElement>(null);
 
   const viewed = sorted.find((v) => v.id === viewedId) ?? latest;
   const evaluation = evaluationsByDraftId[viewed.id];
   const isSelected = selectedDraftId === viewed.id;
+  // Only the selected option can be locked — a non-selected one is an inert
+  // alternate, never tied to anything a manager is reviewing. switchBlockReason
+  // reflects the exact same condition selectDraft's switch-guard uses.
+  const editLocked = isSelected && Boolean(switchBlockReason);
+  // Once a decision's been made, an unselected option collapses to a
+  // one-line row (title + eval stamp + switch action) instead of competing
+  // for the same space as the draft actually being worked on — "Show
+  // preview" expands it back to the full card on demand.
+  const isCollapsible = selectedDraftId !== null && !isSelected;
+  const isCollapsed = isCollapsible && !expanded;
 
   // Grows/shrinks the edit textarea to fit its content, up to the same
   // max-height the preview view uses (max-h-96 = 384px) — beyond that it
@@ -174,6 +188,10 @@ export function DraftOptionCard({
   function handleSelect(draftId: string) {
     const isSwitching = hasChannelOutputs && !isSelected;
     if (isSwitching) {
+      if (switchBlockReason) {
+        toast.error(switchBlockReason);
+        return;
+      }
       setConfirmSwitchDraftId(draftId);
       return;
     }
@@ -201,11 +219,75 @@ export function DraftOptionCard({
     setShowFeedbackInput(false);
   }
 
+  const confirmSwitchModal = confirmSwitchDraftId && (
+    <Modal title="Switch draft?" onClose={() => setConfirmSwitchDraftId(null)}>
+      <p className="text-sm">
+        This request already has LinkedIn, X, and newsletter content. Switching to this draft will regenerate all three from scratch and clear any existing approvals.
+      </p>
+      <div className="flex items-center gap-2 pt-2">
+        <button
+          onClick={confirmSwitchAndSelect}
+          disabled={pending}
+          className="inline-flex cursor-pointer items-center gap-1.5 border border-ink px-3 py-1 text-xs disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          {pendingAction === "select" && <Spinner />}
+          {pendingAction === "select" ? "Switching…" : "Continue"}
+        </button>
+        <button
+          onClick={() => setConfirmSwitchDraftId(null)}
+          disabled={pending}
+          className="cursor-pointer border border-rule px-3 py-1 text-xs disabled:cursor-not-allowed"
+        >
+          Cancel
+        </button>
+      </div>
+    </Modal>
+  );
+
+  if (isCollapsed) {
+    return (
+      <div className="flex min-w-[320px] flex-1 flex-col gap-2 border border-rule p-4">
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2 overflow-hidden">
+            <span className="shrink-0 font-sans text-xs font-semibold text-muted">Option {optionLabel}</span>
+            <span className="truncate text-sm">{latest.title}</span>
+          </div>
+          {evaluation && <StatusBadge status={evaluation.overall_status} />}
+        </div>
+        <div className="flex items-center gap-3">
+          <button onClick={() => setExpanded(true)} className="cursor-pointer text-xs text-muted underline hover:text-ink">
+            Show preview
+          </button>
+          {isOwner && (
+            <button
+              onClick={() => handleSelect(latest.id)}
+              disabled={pending}
+              title={switchBlockReason ?? undefined}
+              className="inline-flex cursor-pointer items-center gap-1.5 border border-rule px-3 py-1 text-xs disabled:cursor-not-allowed"
+            >
+              {pendingAction === "select" && <Spinner />}
+              {pendingAction === "select" ? "Switching…" : "Switch to this"}
+            </button>
+          )}
+        </div>
+
+        {confirmSwitchModal}
+      </div>
+    );
+  }
+
   return (
     <div className="flex min-w-[320px] flex-1 flex-col gap-3 border border-rule p-4">
       <div className="flex items-center justify-between">
         <span className="font-sans text-xs font-semibold text-muted">Option {optionLabel}</span>
-        {isSelected && <span className="stamp text-approve">selected</span>}
+        <div className="flex items-center gap-2">
+          {isSelected && <span className="stamp text-approve">selected</span>}
+          {isCollapsible && (
+            <button onClick={() => setExpanded(false)} className="cursor-pointer text-xs text-muted underline hover:text-ink">
+              Hide preview
+            </button>
+          )}
+        </div>
       </div>
 
       <div className="flex flex-wrap gap-1.5">
@@ -250,22 +332,23 @@ export function DraftOptionCard({
           <input
             value={editTitle}
             onChange={(e) => setEditTitle(e.target.value)}
-            className="border border-rule px-2 py-1 font-serif text-lg"
+            disabled={pending}
+            className="border border-rule px-2 py-1 font-serif text-lg disabled:opacity-60"
           />
           <div className="flex gap-1">
-            <button type="button" title="Bold" onClick={() => wrapSelection("**")} className="cursor-pointer border border-rule px-2 py-1 text-xs font-semibold">
+            <button type="button" title="Bold" onClick={() => wrapSelection("**")} disabled={pending} className="cursor-pointer border border-rule px-2 py-1 text-xs font-semibold disabled:cursor-not-allowed">
               B
             </button>
-            <button type="button" title="Italic" onClick={() => wrapSelection("*")} className="cursor-pointer border border-rule px-2 py-1 text-xs italic">
+            <button type="button" title="Italic" onClick={() => wrapSelection("*")} disabled={pending} className="cursor-pointer border border-rule px-2 py-1 text-xs italic disabled:cursor-not-allowed">
               I
             </button>
-            <button type="button" title="Heading 2" onClick={() => setHeadingLevel(2)} className="cursor-pointer border border-rule px-2 py-1 text-xs">
+            <button type="button" title="Heading 2" onClick={() => setHeadingLevel(2)} disabled={pending} className="cursor-pointer border border-rule px-2 py-1 text-xs disabled:cursor-not-allowed">
               H2
             </button>
-            <button type="button" title="Heading 3" onClick={() => setHeadingLevel(3)} className="cursor-pointer border border-rule px-2 py-1 text-xs">
+            <button type="button" title="Heading 3" onClick={() => setHeadingLevel(3)} disabled={pending} className="cursor-pointer border border-rule px-2 py-1 text-xs disabled:cursor-not-allowed">
               H3
             </button>
-            <button type="button" title="Bullet list" onClick={toggleBulletList} className="cursor-pointer border border-rule px-2 py-1 text-xs">
+            <button type="button" title="Bullet list" onClick={toggleBulletList} disabled={pending} className="cursor-pointer border border-rule px-2 py-1 text-xs disabled:cursor-not-allowed">
               •
             </button>
           </div>
@@ -274,7 +357,8 @@ export function DraftOptionCard({
             value={editBody}
             onChange={(e) => setEditBody(e.target.value)}
             rows={4}
-            className="resize-none overflow-y-auto border border-rule p-2 font-mono text-xs"
+            disabled={pending}
+            className="resize-none overflow-y-auto border border-rule p-2 font-mono text-xs disabled:opacity-60"
           />
           <div className="flex gap-2">
             <button
@@ -311,28 +395,33 @@ export function DraftOptionCard({
                   ? `Retry channel generation (v${viewed.version})`
                   : `Select this option (v${viewed.version})`}
             </button>
-            {mode === "preview" && (
+            {mode === "preview" && !editLocked && (
               <button onClick={startEdit} disabled={pending} className="cursor-pointer border border-rule px-3 py-1 text-xs disabled:cursor-not-allowed">
                 Edit
               </button>
             )}
-            <button
-              onClick={() => setShowFeedbackInput(!showFeedbackInput)}
-              disabled={pending}
-              className="cursor-pointer border border-rule px-3 py-1 text-xs disabled:cursor-not-allowed"
-            >
-              Request AI revision
-            </button>
+            {!editLocked && (
+              <button
+                onClick={() => setShowFeedbackInput(!showFeedbackInput)}
+                disabled={pending}
+                className="cursor-pointer border border-rule px-3 py-1 text-xs disabled:cursor-not-allowed"
+              >
+                Request AI revision
+              </button>
+            )}
           </div>
 
-          {showFeedbackInput && (
+          {editLocked && <p className="text-xs text-muted">{switchBlockReason}</p>}
+
+          {!editLocked && showFeedbackInput && (
             <div className="flex flex-col gap-2">
               <textarea
                 value={feedback}
                 onChange={(e) => setFeedback(e.target.value)}
                 placeholder="What should change?"
                 rows={2}
-                className="border border-rule p-2 text-xs"
+                disabled={pending}
+                className="border border-rule p-2 text-xs disabled:opacity-60"
               />
               <button
                 onClick={handleRequestRevision}
@@ -347,30 +436,7 @@ export function DraftOptionCard({
         </>
       )}
 
-      {confirmSwitchDraftId && (
-        <Modal title="Switch draft?" onClose={() => setConfirmSwitchDraftId(null)}>
-          <p className="text-sm">
-            This request already has LinkedIn, X, and newsletter content. Switching to this draft will regenerate all three from scratch and clear any existing approvals.
-          </p>
-          <div className="flex items-center gap-2 pt-2">
-            <button
-              onClick={confirmSwitchAndSelect}
-              disabled={pending}
-              className="inline-flex cursor-pointer items-center gap-1.5 border border-ink px-3 py-1 text-xs disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              {pendingAction === "select" && <Spinner />}
-              {pendingAction === "select" ? "Switching…" : "Continue"}
-            </button>
-            <button
-              onClick={() => setConfirmSwitchDraftId(null)}
-              disabled={pending}
-              className="cursor-pointer border border-rule px-3 py-1 text-xs disabled:cursor-not-allowed"
-            >
-              Cancel
-            </button>
-          </div>
-        </Modal>
-      )}
+      {confirmSwitchModal}
     </div>
   );
 }

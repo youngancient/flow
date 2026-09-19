@@ -31,6 +31,22 @@ export function stripLeakedCitationIds(text: string): string {
 }
 
 /**
+ * Strips any markdown link whose URL isn't one of the request's actual
+ * source URLs — a prompt instruction alone isn't reliable enough to stop
+ * the model inventing a plausible-looking but dead/unrelated URL for the
+ * "2-3 relevant links" SEO instruction (lib/rules.ts's SEO_BEST_PRACTICES).
+ * Keeps the link text, just drops the markdown link syntax around it, so a
+ * dropped link degrades to plain text rather than a broken link surviving
+ * to the reader. `allowedUrls` is the exact set of source URLs actually
+ * given to the model for this generation call — never invented, never
+ * widened.
+ */
+export function stripUngroundedLinks(text: string, allowedUrls: string[]): string {
+  const allowed = new Set(allowedUrls);
+  return text.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, (match, label, url) => (allowed.has(url) ? match : label));
+}
+
+/**
  * Strips a stray empty inline-citation parenthetical, e.g. "...costs ()."
  * — the same leaked-citation habit stripLeakedCitationIds targets (the
  * model trying to cite inline despite being told to cite only via
@@ -62,7 +78,7 @@ export function cleanChannelText(text: string): string {
   return stripMarkdownArtifacts(stripEmptyParens(stripLeakedCitationIds(stripEmDashes(text))));
 }
 
-/** Applies only the em-dash and leaked-citation cleanups, for text that legitimately keeps markdown (the article). */
-export function cleanArticleText(text: string): string {
-  return stripEmptyParens(stripLeakedCitationIds(stripEmDashes(text)));
+/** Applies the em-dash, leaked-citation, and ungrounded-link cleanups, for text that legitimately keeps markdown (the article). */
+export function cleanArticleText(text: string, allowedUrls: string[]): string {
+  return stripUngroundedLinks(stripEmptyParens(stripLeakedCitationIds(stripEmDashes(text))), allowedUrls);
 }

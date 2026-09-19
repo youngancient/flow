@@ -1,6 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { randomUUID } from "node:crypto";
-import { requireApiAuth } from "@/lib/supabase/auth";
+import { requireApiAuth, isManager } from "@/lib/supabase/auth";
 import { supabaseService } from "@/lib/supabase/service";
 import { contentRequestInputSchema } from "@/lib/schemas";
 import { runPipeline } from "@/lib/pipeline";
@@ -16,6 +16,9 @@ export async function POST(request: NextRequest) {
   const actingEmail = await requireApiAuth(request);
   if (!actingEmail) {
     return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
+  }
+  if (await isManager()) {
+    return NextResponse.json({ ok: false, error: "Managers review content, they don't submit requests" }, { status: 403 });
   }
 
   const body = await request.json().catch(() => null);

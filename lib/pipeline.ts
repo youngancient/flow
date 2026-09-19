@@ -619,9 +619,9 @@ export async function generateChannelOutputs(requestId: string, draftId: string)
     await assertOk(
       db.from("channel_outputs").upsert(
         [
-          { request_id: requestId, draft_id: draftId, channel: "linkedin", subject: null, body: result.linkedin.body, hashtags: [], review_status: "pending_review", publish_status: "not_queued", reviewed_by: null, reviewed_at: null, scheduled_for: null, sent_at: null, last_error: null },
-          { request_id: requestId, draft_id: draftId, channel: "x", subject: null, body: result.x.body, hashtags, review_status: "pending_review", publish_status: "not_queued", reviewed_by: null, reviewed_at: null, scheduled_for: null, sent_at: null, last_error: null },
-          { request_id: requestId, draft_id: draftId, channel: "newsletter", subject: result.newsletter.subject, body: result.newsletter.body, hashtags: [], review_status: "pending_review", publish_status: "not_queued", reviewed_by: null, reviewed_at: null, scheduled_for: null, sent_at: null, last_error: null },
+          { request_id: requestId, draft_id: draftId, channel: "linkedin", subject: null, body: result.linkedin.body, hashtags: [], review_status: "draft", review_comment: null, publish_status: "not_queued", reviewed_by: null, reviewed_at: null, scheduled_for: null, sent_at: null, last_error: null },
+          { request_id: requestId, draft_id: draftId, channel: "x", subject: null, body: result.x.body, hashtags, review_status: "draft", review_comment: null, publish_status: "not_queued", reviewed_by: null, reviewed_at: null, scheduled_for: null, sent_at: null, last_error: null },
+          { request_id: requestId, draft_id: draftId, channel: "newsletter", subject: result.newsletter.subject, body: result.newsletter.body, hashtags: [], review_status: "draft", review_comment: null, publish_status: "not_queued", reviewed_by: null, reviewed_at: null, scheduled_for: null, sent_at: null, last_error: null },
         ],
         { onConflict: "request_id,channel" }
       ),
@@ -661,7 +661,7 @@ export async function regenerateSingleChannelOutput(channelOutputId: string, fee
   const db = supabaseService();
   const { data: output } = await db
     .from("channel_outputs")
-    .select("request_id, channel, drafts(title, body_markdown)")
+    .select("request_id, channel, review_status, drafts(title, body_markdown)")
     .eq("id", channelOutputId)
     .single();
   if (!output) throw new Error(`Channel output not found: ${channelOutputId}`);
@@ -696,10 +696,16 @@ export async function regenerateSingleChannelOutput(channelOutputId: string, fee
           ? { body: result.body, hashtags: (result.hashtags ?? []).slice(0, 2) }
           : { subject: result.subject, body: result.body };
 
+    // Regenerating never changes review_status by itself, regardless of
+    // what it currently is — the owner may want several passes at a
+    // rejected/changes-requested channel before it's actually ready to go
+    // back to a manager. resubmitChannelOutput is the explicit, separate
+    // step for that, mirroring how generating channels doesn't auto-send
+    // them for approval either.
     await assertOk(
       db
         .from("channel_outputs")
-        .update({ ...patch, review_status: "pending_review", updated_at: new Date().toISOString() })
+        .update({ ...patch, updated_at: new Date().toISOString() })
         .eq("id", channelOutputId),
       "channel_outputs regenerate update"
     );

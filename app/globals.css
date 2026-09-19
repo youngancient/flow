@@ -85,6 +85,22 @@ body {
   color: var(--approve);
   text-decoration: underline;
 }
+.prose-article table {
+  width: 100%;
+  margin: 1rem 0;
+  border-collapse: collapse;
+  font-family: var(--font-sans);
+  font-size: 0.9rem;
+}
+.prose-article th,
+.prose-article td {
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--rule);
+  text-align: left;
+}
+.prose-article th {
+  font-weight: 600;
+}
 
 /* Flagged-quote highlight inside the reading view — see ArticlePreview. */
 mark.flagged {

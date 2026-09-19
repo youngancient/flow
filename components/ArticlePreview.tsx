@@ -1,4 +1,5 @@
 import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import type { ReactNode } from "react";
 
 export type FlaggedQuote = { quote: string; reason: string };
@@ -46,12 +47,19 @@ export function ArticlePreview({ bodyMarkdown, flags = [] }: { bodyMarkdown: str
   return (
     <div className="prose-article">
       <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
         components={{
           p: ({ children }) => <p>{highlightChildren(children, flags)}</p>,
           li: ({ children }) => <li>{highlightChildren(children, flags)}</li>,
           h1: ({ children }) => <h1>{highlightChildren(children, flags)}</h1>,
           h2: ({ children }) => <h2>{highlightChildren(children, flags)}</h2>,
           h3: ({ children }) => <h3>{highlightChildren(children, flags)}</h3>,
+          td: ({ children }) => <td>{highlightChildren(children, flags)}</td>,
+          a: ({ href, children }) => (
+            <a href={href} target="_blank" rel="noreferrer">
+              {children}
+            </a>
+          ),
         }}
       >
         {bodyMarkdown}

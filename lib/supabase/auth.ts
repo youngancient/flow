@@ -54,6 +54,31 @@ export async function requireSessionEmail(): Promise<string> {
 }
 
 /**
+ * True when the current session belongs to a manager — set manually per
+ * account via `raw_app_meta_data.role` on the Supabase auth user (there is
+ * no dashboard field for this; it's set with a SQL update against
+ * auth.users, see artifact/design.md). app_metadata is only writable with
+ * the service-role key, never by the user themselves, so this can't be
+ * self-granted the way user_metadata could be.
+ */
+export async function isManager(): Promise<boolean> {
+  const user = await getSessionUser();
+  return user?.app_metadata?.role === "manager";
+}
+
+/** Throws unless the current session is a manager — for Server Actions/Route Handlers. */
+export async function requireManager(): Promise<string> {
+  const user = await getSessionUser();
+  if (!user?.email) {
+    throw new Error("Unauthorized: no active session");
+  }
+  if (user.app_metadata?.role !== "manager") {
+    throw new Error("Unauthorized: manager role required");
+  }
+  return user.email;
+}
+
+/**
  * Page-only counterpart to requireSessionEmail: redirects to /login instead
  * of throwing, so visiting a protected page while logged out lands on the
  * login screen instead of Next.js's generic error boundary. Never use this

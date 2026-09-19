@@ -199,6 +199,8 @@ Produce a content plan (primary keyword + outline) and exactly 3 distinct articl
 ${SEO_BEST_PRACTICES}
 
 Every option's body_markdown must be well-formed markdown (one H1, H2 sections, H3 where needed). Cite the excerpts that actually support each claim via source_chunk_ids — do not cite an excerpt that doesn't support what you wrote, and never reference an ID that wasn't given to you above.
+
+If you include a link in the body, its URL must be copied verbatim from one of the source URLs listed above. Never write a URL that isn't one of those, and never guess at what a related page's URL might be. If none of the given sources fit naturally as a link, leave it out rather than inventing one.
 `.trim();
 
   const result = await callToolWithRetry({
@@ -206,7 +208,7 @@ Every option's body_markdown must be well-formed markdown (one H1, H2 sections, 
     system:
       "You are a senior content strategist and SEO editor for a marketing agency. You write clearly, cite only the source material you're given, and never fabricate facts, statistics, or quotes.",
     userPrompt,
-    maxTokens: 8000,
+    maxTokens: 16000, // three full SEO articles + plan in one call — 8000 was tight enough to risk truncation on well-grounded, appropriately deep drafts
     toolName: "submit_plan_and_options",
     toolDescription: "Submit the content plan and three distinct article options.",
     inputSchema: {
@@ -253,8 +255,9 @@ Every option's body_markdown must be well-formed markdown (one H1, H2 sections, 
     },
   }, (data) => buildPlanAndGenerateSchema(allowedChunkIds).parse(data));
 
+  const allowedUrls = Array.from(new Set(params.excerpts.map((e) => e.sourceUrl)));
   const parsed = result.data;
-  parsed.options = parsed.options.map((o) => ({ ...o, body_markdown: cleanArticleText(o.body_markdown) }));
+  parsed.options = parsed.options.map((o) => ({ ...o, body_markdown: cleanArticleText(o.body_markdown, allowedUrls) }));
 
   return { ...parsed, inputTokens: result.inputTokens, outputTokens: result.outputTokens };
 }
@@ -299,7 +302,7 @@ ${draftsBlock}
     system:
       "You are a rigorous, skeptical content quality reviewer. You have no stake in any draft passing. Flag every claim that isn't traceable to the provided excerpts.",
     userPrompt,
-    maxTokens: 6000,
+    maxTokens: 8000, // verbatim-quoted unsupported claims/flagged sections across up to 3 drafts can run long
     toolName: "submit_evaluations",
     toolDescription: "Submit a rubric evaluation for every draft option provided.",
     inputSchema: {
@@ -438,7 +441,7 @@ export async function reviseDrafts(params: {
 }) {
   const allowedChunkIds = params.excerpts.map((e) => e.id);
   const excerptsBlock = params.excerpts.length
-    ? params.excerpts.map((e) => `[${e.id}] ${e.text}`).join("\n\n")
+    ? params.excerpts.map((e) => `[${e.id}] (source: ${e.sourceUrl})\n${e.text}`).join("\n\n")
     : "(none available)";
 
   const itemsBlock = params.items
@@ -457,6 +460,8 @@ Continue following these SEO rules:
 
 ${SEO_BEST_PRACTICES}
 
+If you include a link, its URL must be copied verbatim from one of the source URLs listed above. Never write a URL that isn't one of those.
+
 ${itemsBlock}
 `.trim();
 
@@ -465,7 +470,7 @@ ${itemsBlock}
     system:
       "You are revising a draft based on specific feedback. Make targeted fixes, not a wholesale rewrite. Stay grounded in the provided source excerpts.",
     userPrompt,
-    maxTokens: 8000,
+    maxTokens: 16000, // up to 3 near-full-length article revisions in one call, if every option fails evaluation in the same round
     toolName: "submit_revisions",
     toolDescription: "Submit the revised version of each draft.",
     inputSchema: {
@@ -491,8 +496,9 @@ ${itemsBlock}
     },
   }, (data) => buildRevisionSchema(allowedChunkIds).parse(data));
 
+  const allowedUrls = Array.from(new Set(params.excerpts.map((e) => e.sourceUrl)));
   const parsed = result.data;
-  parsed.revisions = parsed.revisions.map((r) => ({ ...r, body_markdown: cleanArticleText(r.body_markdown) }));
+  parsed.revisions = parsed.revisions.map((r) => ({ ...r, body_markdown: cleanArticleText(r.body_markdown, allowedUrls) }));
 
   return { ...parsed, inputTokens: result.inputTokens, outputTokens: result.outputTokens };
 }
